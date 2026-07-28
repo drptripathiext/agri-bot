@@ -22,6 +22,8 @@ BOT_NAME = os.environ.get("BOT_NAME", "AgriBot")
 ADMIN_ID = os.environ.get("ADMIN_ID", "").strip()
 RATE_PER_HOUR = int(os.environ.get("RATE_PER_HOUR", "25"))
 ALLOW_OUTSIDE = os.environ.get("ALLOW_OUTSIDE_NOTES", "1") == "1"
+# Jawab ke neeche 📚 book ka naam dikhana hai ya nahi. Default: nahi.
+SHOW_SOURCES = os.environ.get("SHOW_SOURCES", "0") == "1"
 DB_PATH = os.environ.get("DB_PATH", "/tmp/agribot.db")
 
 KB = None
@@ -177,9 +179,31 @@ RULES:
    Aim for under 200 words unless the question needs more.
 4. If the STUDY MATERIAL does not contain the answer:{outside}
 5. NEVER invent citations, years, scheme names or statistics.
-6. Do not mention "context", "chunks" or "documents" — just answer naturally.
+6. NEVER reveal or name your sources. Do not write the name of any book, PDF, notes,
+   chapter, unit, author or file. Do not write "according to the notes", "as per the
+   material", "source", "context", "document" or anything similar. Just state the fact
+   plainly, as if you already knew it.
 7. No preamble like "Sure" or "Great question". Start with the answer.
+8. OFF-TOPIC / NONSENSE FILTER — this overrides every other rule.
+   If the message is NOT a genuine study question, reply with EXACTLY this one token
+   and nothing else:
+   {sentinel}
+   Use it when the message is: gibberish or random characters; a joke, meme, flirting,
+   or time-pass; personal questions about the user, you, or anyone's private life;
+   abuse, insults or adult content; politics, cricket, movies, relationships, money
+   advice; asking you to write code, essays or do unrelated tasks; or any topic with
+   no connection to agriculture, extension, rural development, or competitive exams.
+   BE GENEROUS to real students: badly worded, short, spelling-mistake, one-word or
+   Hinglish questions about ANY academic or agriculture/exam topic are GENUINE —
+   answer those normally. Greetings like "hi", "thanks", "good morning" are also fine
+   to answer briefly and warmly. Only use the token for clearly off-topic or weird messages.
 """
+
+SENTINEL = "OFF_TOPIC_Q"
+
+# Ajeeb / bedhange sawaal ka fixed jawab
+WEIRD_HI = "iska answer to sirf Tripathi Sir de payenge, mai nahi 🙏"
+WEIRD_EN = "Ask Tripathi Sir, only He can help you now 🙏"
 
 OUTSIDE_YES = """
    start your reply with the line "⚠️ Notes me nahi mila — general knowledge se:" and then
@@ -198,22 +222,76 @@ QUESTION: {question}"""
 
 # --------------------------------------------------------------------- answering
 
+# LLM kabhi-kabhi source ka naam likh deta hai — usko saaf kar do
+_SRC_LINE = re.compile(
+    r"(?im)^\s*(?:[📚📖🔖]\s*)?(?:source|sources|src|ref|reference|references|"
+    r"citation|from|as per|according to|based on|study material|material|notes?|"
+    r"scrot|srot|स्रोत|संदर्भ)\s*[:\-–—]\s*.+$")
+_SRC_INLINE = re.compile(
+    r"(?i)\s*\((?:source|ref|reference|from|as per|according to)\s*[:\-]?[^)]{0,80}\)")
+_SRC_PHRASE = re.compile(
+    r"(?i)\b(?:as per|according to|as (?:given|mentioned|stated|described) in|"
+    r"from)\s+(?:the\s+)?(?:study\s+)?(?:material|notes?|book|chapter|unit|pdf|"
+    r"document|context|handbook)[a-z ]{0,25}[,:]?\s*")
+_EMOJI_LINE = re.compile(r"(?m)^\s*[📚📖🔖]\s*.*$")
+
+
+def strip_sources(text):
+    t = _SRC_LINE.sub("", text)
+    t = _EMOJI_LINE.sub("", t)
+    t = _SRC_INLINE.sub("", t)
+    t = _SRC_PHRASE.sub("", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+
+# NOTE: yahan sirf wo shabd rakhe hain jo English me nahi hote
+# ("me", "main", "sir", "form", "full" jaan-boojh kar nahi hain — wo English bhi hain)
+_HINGLISH = set("""kya kyu kyun kyon kaise kaun kab kahan kitna kitne kitni batao
+bataiye bataye samjhao samjhaiye samjha hai hain haan nahi nhi mujhe muje mera meri
+tumhara tumhari aapka aapki tum aap ki ke ko mein aur bhi yeh woh iska uska unka
+kro karo kre kare karna karke karta karti wala wali bhai bhaiya didi acha accha
+achha thik theek matlab kripya arth paribhasha prakar labh mahatva antar chahiye
+hota hoti hote raha rahi rahe diya diye gaya gayi liye kuch kuchh sab sabhi
+padhna padhai taiyari sawaal jawab jaankari""".split())
+
+
+def is_english(text, lang="auto"):
+    """English reply chahiye ya Hindi/Hinglish wala — decide karo."""
+    if lang == "en":
+        return True
+    if lang in ("hi", "hinglish"):
+        return False
+    if re.search(r"[ऀ-ॿ]", text):
+        return False
+    words = set(re.findall(r"[a-z]+", text.lower()))
+    return not (words & _HINGLISH)
+
+
 def answer_question(q, lang):
     hits = KB.search(q, top_k=8)
     ctx = KB.build_context(hits)
     sysmsg = SYSTEM.format(name=BOT_NAME,
                            lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]),
-                           outside=OUTSIDE_YES if ALLOW_OUTSIDE else OUTSIDE_NO)
+                           outside=OUTSIDE_YES if ALLOW_OUTSIDE else OUTSIDE_NO,
+                           sentinel=SENTINEL)
     if not ctx:
         ctx = "(no relevant material found)"
     out = llm.complete(sysmsg, USER_TMPL.format(context=ctx, question=q))
-    srcs = []
-    for h in hits[:3]:
-        s = h["src"]
-        if s not in srcs:
-            srcs.append(s)
-    if srcs and "Notes me nahi mila" not in out:
-        out += "\n\n📚 " + ", ".join(s[:55] for s in srcs)
+
+    if SENTINEL in out.upper().replace(" ", "_"):
+        return WEIRD_EN if is_english(q, lang) else WEIRD_HI
+
+    out = strip_sources(out)
+    if not out:
+        return WEIRD_EN if is_english(q, lang) else WEIRD_HI
+    if SHOW_SOURCES:
+        srcs = []
+        for h in hits[:3]:
+            if h["src"] not in srcs:
+                srcs.append(h["src"])
+        if srcs and "Notes me nahi mila" not in out:
+            out += "\n\n📚 " + ", ".join(s[:55] for s in srcs)
     return out
 
 
@@ -248,19 +326,23 @@ HELP = """<b>{name}</b> — tumhare notes se padhne wala bot 📚
 /ask &lt;sawaal&gt; — notes se jawab
 /quiz &lt;topic&gt; — 5 MCQ practice questions
 /lang auto|hi|en|hinglish — jawab ki bhasha
-/sources — kaun kaun si books/notes bot ke paas hain
 /stats — bot ka usage
 /help — ye message
 
 <b>Tip:</b> sawaal jitna specific hoga, jawab utna accurate. 👍"""
 
 
-def cmd_sources(chat, msg):
+def cmd_sources(chat, msg, uid):
+    """Book ke naam sirf admin ko. Baaki sabko sirf ginti."""
     srcs = KB.meta.get("sources", [])
-    txt = (f"📚 <b>{len(srcs)} sources</b> · {KB.meta.get('chunks', 0)} passages\n\n"
-           + "\n".join("• " + html.escape(s[:70]) for s in srcs[:80]))
-    if len(srcs) > 80:
-        txt += f"\n… +{len(srcs) - 80} aur"
+    if ADMIN_ID and str(uid) == ADMIN_ID:
+        txt = (f"📚 <b>{len(srcs)} sources</b> · {KB.meta.get('chunks', 0)} passages\n\n"
+               + "\n".join("• " + html.escape(s[:70]) for s in srcs[:80]))
+        if len(srcs) > 80:
+            txt += f"\n… +{len(srcs) - 80} aur"
+    else:
+        txt = (f"📚 Bot ke paas <b>{len(srcs)}</b> books/notes ka poora content hai "
+               f"(<b>{KB.meta.get('chunks', 0)}</b> passages).\nSeedha sawaal poochho!")
     tg("sendMessage", chat_id=chat, text=txt[:4000], parse_mode="HTML",
        reply_to_message_id=msg["message_id"])
 
@@ -306,7 +388,7 @@ def handle(msg):
             tg("sendMessage", chat_id=chat, text=HELP.format(name=BOT_NAME),
                parse_mode="HTML"); return
         if cmd == "sources":
-            cmd_sources(chat, msg); return
+            cmd_sources(chat, msg, uid); return
         if cmd == "stats":
             cmd_stats(chat, msg); return
         if cmd == "lang":
@@ -353,7 +435,7 @@ def handle(msg):
     cached = cache_get(text, lang)
     if cached:
         bump("answered"); bump("cached")
-        send(chat, cached, reply_to=msg["message_id"]); return
+        send(chat, strip_sources(cached), reply_to=msg["message_id"]); return
 
     if not rate_ok(uid):
         send(chat, "⏳ Ek ghante me sirf {} sawaal. Thodi der baad poochho 🙏"
@@ -423,7 +505,6 @@ def main():
         {"command": "ask", "description": "Notes se sawaal poochho"},
         {"command": "quiz", "description": "5 MCQ practice questions"},
         {"command": "lang", "description": "auto | hi | en | hinglish"},
-        {"command": "sources", "description": "Kaun si books bot ke paas hain"},
         {"command": "stats", "description": "Bot usage"},
         {"command": "help", "description": "Madad"},
     ])
