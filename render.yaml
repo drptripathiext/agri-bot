@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: agri-bot
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -u app.py
+    healthCheckPath: /
+    autoDeployTrigger: commit
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: DB_PATH
+        value: /tmp/agribot.db
+      - key: BOT_NAME
+        value: AgriBot
+      - key: RATE_PER_HOUR
+        value: "25"
+      - key: ALLOW_OUTSIDE_NOTES
+        value: "1"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false          # Render deploy ke waqt poochhega
+      - key: GEMINI_API_KEY
+        sync: false          # Render deploy ke waqt poochhega
