@@ -156,9 +156,11 @@ def typing(chat_id):
 # --------------------------------------------------------------------- prompts
 
 LANG_RULE = {
-    "auto": ("Reply in the SAME language and script the user used. "
-             "Roman-Hindi (Hinglish) question -> answer in Hinglish. "
-             "Devanagari question -> answer in Hindi. English question -> answer in English."),
+    "auto": ("DEFAULT TO ENGLISH. Answer in clear, exam-style English unless the user "
+             "clearly wrote otherwise. Only two exceptions: (a) the question is in "
+             "Roman-script Hindi / Hinglish -> reply in Hinglish; (b) the question is in "
+             "Devanagari script -> reply in Hindi. Anything else, including short or "
+             "one-word questions, gets an ENGLISH answer."),
     "en": "Always reply in clear English.",
     "hi": "Hamesha Hindi (Devanagari script) me jawab do. Technical terms English me rakh sakte ho.",
     "hinglish": ("Hamesha Hinglish me jawab do (Roman script Hindi + English technical terms). "
@@ -197,20 +199,82 @@ RULES:
    Hinglish questions about ANY academic or agriculture/exam topic are GENUINE —
    answer those normally. Greetings like "hi", "thanks", "good morning" are also fine
    to answer briefly and warmly. Only use the token for clearly off-topic or weird messages.
+9. ABOUT YOURSELF. If asked where your knowledge comes from, say it comes from
+   {owner}'s knowledge — whatever He taught you. If asked who {owner} is or who made
+   you, say He is the Admin of the {group} group who designed and built you with
+   2 months of hard work for the aspirants, and invite them to join {glink}.
+   If asked how to contact Him, give {link} and {phone}.
+   Never say you are Gemini, Google, an LLM, or that you read PDFs or notes.
 """
 
 SENTINEL = "OFF_TOPIC_Q"
 
-# Ajeeb / bedhange sawaal ka fixed jawab
+# ===================== YAHAN SE APNE HISAB SE BADAL SAKTE HO =====================
+
+OWNER_NAME = "Dr. P. Tripathi"
+OWNER_GROUP = "@agriextprep"
+GROUP_LINK = "https://t.me/AgriExtPrep"
+OWNER_LINK = "https://t.me/asktripathii"
+OWNER_PHONE = "+91 85779 16450"
+PROMO_EVERY = int(os.environ.get("PROMO_EVERY", "10"))   # har N-ve sawaal par group promo
+
+# Ajeeb / bedhanga sawaal — pehli aur doosri baar
 WEIRD_HI = "iska answer to sirf Tripathi Sir de payenge, mai nahi 🙏"
 WEIRD_EN = "Ask Tripathi Sir, only He can help you now 🙏"
 
+# Baar-baar pareshan kare to (teesri baar se)
+ANGRY_HI = ("Bas karo ab 😤 Yahi karte rahoge to exam nahi niklega.\n"
+            "Padhai par dhyan do — sawaal poochho, main jawab dunga.")
+ANGRY_EN = ("Enough now 😤 Keep doing this and you will never clear the exam.\n"
+            "Focus on your studies — ask me a real question and I will answer.")
+
+# "Tum answer kahan se dete ho?"
+FROM_HI = (f"{OWNER_NAME} ke knowledge se 🙏\n"
+           "Jo unhone mujhe padhaya aur sikhaya, bas wahi se batata hoon.")
+FROM_EN = (f"From {OWNER_NAME}'s knowledge 🙏\n"
+           "Whatever He taught me — that is all I answer from.")
+
+# "Tripathi Sir kaun hain?" / "tumhe kisne banaya?"
+WHO_HI = (f"<b>{OWNER_NAME}</b> — Admin, {OWNER_GROUP} group 🌾\n\n"
+          "Unhone hi mujhe design kiya aur <b>2 mahine ki mehnat</b> se banaya — "
+          "sirf aap logon ke liye.\n"
+          "Aur aap log unke liye kuch nahi karte 😌\n\n"
+          f"👥 Group join karo: {GROUP_LINK}\n"
+          f"💬 Sir se baat: {OWNER_LINK}")
+WHO_EN = (f"<b>{OWNER_NAME}</b> — Admin of the {OWNER_GROUP} group 🌾\n\n"
+          "He designed me and built me with <b>2 months of hard work</b>, "
+          "just for you.\n"
+          "And you people do nothing for Him 😌\n\n"
+          f"👥 Join the group: {GROUP_LINK}\n"
+          f"💬 Reach Sir: {OWNER_LINK}")
+
+# "Sir se baat karni hai / contact"
+CONTACT_MSG = (f"{OWNER_NAME} se seedhe baat karo 👇\n\n"
+               f"💬 {OWNER_LINK}\n"
+               f"📞 {OWNER_PHONE}\n"
+               f"👥 Group: {GROUP_LINK}")
+
+# Har 10 sawaal ke baad jawab ke neeche ye jud jaayega
+PROMO_HI = f"———\n📣 Roz ke notes, doubts aur updates ke liye group join karo 👉 {GROUP_LINK}"
+PROMO_EN = f"———\n📣 For daily notes, doubts and updates, join the group 👉 {GROUP_LINK}"
+
+# Gaali / adult bhasha par
+ABUSE_HI = ("⚠️ Aisi bhasha yahan bilkul nahi chalegi.\n\n"
+            "Aapke saare messages <b>record ho rahe hain</b> aur admin sab dekh rahe hain 👁️\n"
+            "Ye pehli aur aakhri warning hai. Padhai par dhyan do.")
+ABUSE_EN = ("⚠️ This language is not allowed here.\n\n"
+            "All your messages are being <b>recorded</b> and the admins are watching 👁️\n"
+            "Treat this as your first and final warning. Focus on your studies.")
+
+# ================================================================================
+
 OUTSIDE_YES = """
-   start your reply with the line "⚠️ Notes me nahi mila — general knowledge se:" and then
-   answer from your own knowledge, clearly and carefully."""
+   answer from your own knowledge, carefully and confidently. NEVER announce this —
+   do not write "not found in notes", "notes me nahi mila", "the material does not
+   mention", "based on general knowledge" or any similar disclaimer. Just answer."""
 
 OUTSIDE_NO = """
-   say politely that this topic is not in the notes yet, and suggest a related topic
+   say politely that this topic is not covered yet, and suggest a related topic
    that IS covered. Do not answer from outside knowledge."""
 
 USER_TMPL = """STUDY MATERIAL:
@@ -235,14 +299,42 @@ _SRC_PHRASE = re.compile(
     r"document|context|handbook)[a-z ]{0,25}[,:]?\s*")
 _EMOJI_LINE = re.compile(r"(?m)^\s*[📚📖🔖]\s*.*$")
 
+# "Notes me nahi mila" type disclaimers — sirf phrase hatao, baaki jawab rakho
+_D = (r"(?:notes?\s*(?:me|mein|m)\s*(?:ye|yeh|is\w*)?\s*nahi[n]?\s*(?:mila|hai|h)\b"
+      r"|(?:ye|yeh|is\w*)\s*notes?\s*(?:me|mein|m)\s*nahi[n]?\s*(?:hai|h|mila)?\b"
+      r"|(?:this|it|that|the\s+topic|this\s+topic)\s+is\s+not\s+"
+      r"(?:in|mentioned\s+in|covered\s+in|found\s+in|available\s+in|present\s+in)\s+"
+      r"the\s+(?:notes?|material|study\s*material|document|context)"
+      r"|(?:the\s+)?(?:study\s+)?(?:material|notes?|context)\s+does\s+not\s+"
+      r"(?:mention|contain|cover|include|have)\s*(?:this|it)?"
+      r"|(?:based\s+on|from|as\s+per)\s+(?:my\s+)?general\s+knowledge"
+      r"|general\s+knowledge\s+se)")
 
-def strip_sources(text):
+_DISCLAIM_LINE = re.compile(r"(?im)^\s*(?:⚠️\s*)?" + _D +
+                            r"\s*[—\-–:,.]*\s*(?:general\s+knowledge\s+se)?\s*[:\-–—.]?\s*$")
+_DISCLAIM_INLINE = re.compile(r"(?i)(?:⚠️\s*)?" + _D +
+                              r"\s*[—\-–:,.]*\s*"
+                              r"(?:however|but|phir\s*bhi|lekin|magar|still)?\s*[,.:—\-–]?\s*"
+                              r"(?:[a-z ]{0,25}?[:])?\s*")
+
+
+def _light_strip(text):
     t = _SRC_LINE.sub("", text)
     t = _EMOJI_LINE.sub("", t)
+    return re.sub(r"\n{3,}", "\n\n", t).strip()
+
+
+def strip_sources(text):
+    light = _light_strip(text)
+    t = _DISCLAIM_LINE.sub("", light)
+    t = _DISCLAIM_INLINE.sub("", t)
     t = _SRC_INLINE.sub("", t)
     t = _SRC_PHRASE.sub("", t)
-    t = re.sub(r"\n{3,}", "\n\n", t)
-    return t.strip()
+    t = re.sub(r"\n{3,}", "\n\n", t).strip()
+    # safety: agar safai me poora jawab hi mit gaya to halka wala rakho
+    if len(t) < 15 <= len(light):
+        t = light
+    return (t[0].upper() + t[1:]) if t and t[0].islower() else t
 
 
 # NOTE: yahan sirf wo shabd rakhe hain jo English me nahi hote
@@ -251,9 +343,12 @@ _HINGLISH = set("""kya kyu kyun kyon kaise kaun kab kahan kitna kitne kitni bata
 bataiye bataye samjhao samjhaiye samjha hai hain haan nahi nhi mujhe muje mera meri
 tumhara tumhari aapka aapki tum aap ki ke ko mein aur bhi yeh woh iska uska unka
 kro karo kre kare karna karke karta karti wala wali bhai bhaiya didi acha accha
-achha thik theek matlab kripya arth paribhasha prakar labh mahatva antar chahiye
-hota hoti hote raha rahi rahe diya diye gaya gayi liye kuch kuchh sab sabhi
-padhna padhai taiyari sawaal jawab jaankari""".split())
+achha thik theek matlab kripya kripaya arth paribhasha prakar labh mahatva antar
+chahiye hota hoti hote raha rahi rahe diya diye gaya gayi liye kuch kuchh sab sabhi
+padhna padhai taiyari sawaal jawab jaankari jankari tumhe tumko tujhe tera teri
+tere mera meri mere hamara humara hamari humein hume kisne kisko kiska kisi banaya
+banaye banane banata bataye bataiye dijiye nahin zyada jyada thoda bahut kaisa
+kaisi kyunki kyuki lekin magar abhi phir jaise waise unka unko dena deta deti""".split())
 
 
 def is_english(text, lang="auto"):
@@ -268,29 +363,134 @@ def is_english(text, lang="auto"):
     return not (words & _HINGLISH)
 
 
+# ---- fixed-answer intents (LLM call ki zaroorat hi nahi — instant aur free) ----
+
+_RE_FROM = re.compile(r"""(?ix)
+    ( (kahan|kaha|kahaan|kidhar) \s* se \s* (ye|yeh|tu|tum|aap|bot|inf|jaankari|jankari)?
+        \s* (answer|jawab|jwab|batat|bata|jaankari|jankari|padha|seekh|laat|late|deta|dete)
+    | (answer|jawab|jwab|data|info|information) \s* (tum|aap|ye|yeh)? \s*
+        (kahan|kaha|kahaan|kidhar) \s* se
+    | where \s+ (do|did|does) \s+ (you|u) \s+ (get|find|learn|take|source)
+    | how \s+ (do|did) \s+ (you|u) \s+ (know|learn)
+    | (what|whats|what's) \s+ (is|are)? \s* (your|ur) \s+ (source|sources|data|knowledge)
+    | (your|ur|tumhara|tumhare|aapka|apka) \s+ (source|sources|knowledge) \s+ (kya|what|hai)
+    | (kis|kiske|kisse|kiski) \s* se? \s* (notes|book|knowledge|help) \s* se
+    | trained \s+ on \s+ (what|kya)
+    )""")
+
+_RE_WHO = re.compile(r"""(?ix)
+    tripathi (?! [^?.\n]{0,25} \b (reddy|management|principles) \b )
+    [^?.\n]{0,30} \b (kaun|kon|koun|who|about|kya\s*karte|introduce|intro) \b
+  | \b (kaun|kon|who) \b [^?.\n]{0,30} tripathi
+  | (tumhe|tumko|tujhe|aapko) \s* (kisne|kaun\s*ne) \s* banaya
+  | who \s+ (made|created|built|designed) \s+ (you|u|this\s*bot)
+  | (tumhara|tumhare|aapka|apka) \s+ (owner|malik|admin|creator|banane\s*wala)
+  | (bot|tum|aap) \s* (ko)? \s* kisne \s* banaya""")
+
+_RE_CONTACT = re.compile(r"""(?ix)
+    ( (contact|sampark|number|whatsapp|mobile|phone|call|baat|message|msg|milna|milna\s*hai|reach|dm)
+      [^?.\n]{0,35} \b (tripathi|sir|owner|admin|creator|malik|aapse|tumse) \b
+    | \b (tripathi|sir|owner|admin) \b [^?.\n]{0,35}
+      (contact|sampark|number|whatsapp|mobile|phone|call|se\s*baat|message|msg|reach|dm)
+    | how \s+ (can|do) \s+ i \s+ (contact|reach|message)
+    )""")
+
+
+def fixed_intent(q, lang):
+    """Kuch sawaalon ka jawab pehle se tay hai — AI ko poochne ki zaroorat nahi."""
+    en = is_english(q, lang)
+    if _RE_CONTACT.search(q):
+        return CONTACT_MSG
+    if _RE_WHO.search(q):
+        return WHO_EN if en else WHO_HI
+    if _RE_FROM.search(q):
+        return FROM_EN if en else FROM_HI
+    return None
+
+
+# ---- gaali / adult bhasha ----
+# NOTE: "sex" (sex ratio), "rape" (rapeseed), "bc" (backward class) jaan-boojh kar
+# nahi rakhe — wo asli exam topics me aate hain.
+_ABUSE = re.compile(r"""(?ix)\b(
+    m[ae]d[ae]r?ch[o0]+d\w* | b[ae]h?[ae]nch[o0]+d\w* | bhench[o0]+d\w* | bsdk | bhsdk
+  | bh[o0]+sd[ia]\w* | bh[o0]+sda\w* | ch[u+]t[iy]+a\w* | ch[u+]t[iy]e\w* | chutya\w*
+  | g[a@]nd[u+]\w* | gaandu\w* | g[a@]{2}nd | ch[o0]+d[uo]? | ch[o0]+dn?a
+  | l[a@]nd | l[a@]ud[ae] | l[a@]wd[ae] | jh[a@]{1,2}t\w* | r[a@]nd[iy]\w*
+  | h[a@]r[a@]m[iy]\w* | k[a@]m[iy]n[ae]\w* | b[a@]kch[o0]d\w* | t[a@]tt[iy]
+  | ch[u+]tt?[ae]d | m[uy]th\w* | b[o0]{2}bs? | p[e3]nis | v[a@]gin[a@] | p[o0]rn\w*
+  | nud[e3]s? | xxx | s[e3]xy | h[o0]rny | fuck\w* | f[u\*]ck | fck | shit
+  | b[i1]tch\w* | b[a@]st[a@]rd | [a@]ssh[o0]l[e3] | d[i1]ckh?[e3]?[a@]?d?
+  | pu[s\$]{2}y | wh[o0]r[e3] | slut | cunt | m[o0]th[e3]rfuck\w*
+)\b""")
+
+
+def is_abusive(text):
+    return bool(_ABUSE.search(text))
+
+
+def user_qcount(uid, add=True):
+    """User ne ab tak kitne sawaal poochhe (promo ke liye)."""
+    with db() as c:
+        c.execute("CREATE TABLE IF NOT EXISTS ucount(uid TEXT PRIMARY KEY, n INTEGER)")
+        if add:
+            c.execute("INSERT INTO ucount(uid,n) VALUES(?,1) "
+                      "ON CONFLICT(uid) DO UPDATE SET n=n+1", (str(uid),))
+        r = c.execute("SELECT n FROM ucount WHERE uid=?", (str(uid),)).fetchone()
+    return r[0] if r else 0
+
+
+def maybe_promo(answer, uid, en):
+    """Har PROMO_EVERY-ve sawaal par group ka link jod do."""
+    n = user_qcount(uid)
+    if PROMO_EVERY > 0 and n % PROMO_EVERY == 0:
+        return answer + "\n\n" + (PROMO_EN if en else PROMO_HI)
+    return answer
+
+
+def weird_count(uid, add=False):
+    """Ek ghante me user ne kitni baar bakwaas ki."""
+    now = int(time.time())
+    with db() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS weird(uid TEXT, ts INTEGER)""")
+        c.execute("DELETE FROM weird WHERE ts < ?", (now - 3600,))
+        if add:
+            c.execute("INSERT INTO weird VALUES(?,?)", (str(uid), now))
+        return c.execute("SELECT COUNT(*) FROM weird WHERE uid=?", (str(uid),)).fetchone()[0]
+
+
+def weird_reply(q, lang, uid):
+    en = is_english(q, lang)
+    n = weird_count(uid, add=True)
+    if n >= 3:                                   # baar-baar pareshan kar raha hai
+        return ANGRY_EN if en else ANGRY_HI
+    return WEIRD_EN if en else WEIRD_HI
+
+
 def answer_question(q, lang):
+    """Normal jawab, ya SENTINEL agar sawaal bakwaas hai."""
     hits = KB.search(q, top_k=8)
     ctx = KB.build_context(hits)
     sysmsg = SYSTEM.format(name=BOT_NAME,
                            lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]),
                            outside=OUTSIDE_YES if ALLOW_OUTSIDE else OUTSIDE_NO,
-                           sentinel=SENTINEL)
+                           sentinel=SENTINEL, owner=OWNER_NAME, group=OWNER_GROUP,
+                           link=OWNER_LINK, phone=OWNER_PHONE, glink=GROUP_LINK)
     if not ctx:
         ctx = "(no relevant material found)"
     out = llm.complete(sysmsg, USER_TMPL.format(context=ctx, question=q))
 
     if SENTINEL in out.upper().replace(" ", "_"):
-        return WEIRD_EN if is_english(q, lang) else WEIRD_HI
+        return SENTINEL
 
     out = strip_sources(out)
     if not out:
-        return WEIRD_EN if is_english(q, lang) else WEIRD_HI
+        return SENTINEL
     if SHOW_SOURCES:
         srcs = []
         for h in hits[:3]:
             if h["src"] not in srcs:
                 srcs.append(h["src"])
-        if srcs and "Notes me nahi mila" not in out:
+        if srcs:
             out += "\n\n📚 " + ", ".join(s[:55] for s in srcs)
     return out
 
@@ -315,21 +515,28 @@ def make_quiz(topic, n=5):
 
 # --------------------------------------------------------------------- commands
 
-HELP = """<b>{name}</b> — tumhare notes se padhne wala bot 📚
+HELP = """<b>{name}</b> — your study partner for ICAR NET / ARS / SRF / JRF 📚
 
-<b>Kaise poochho:</b>
-• Private chat me — seedha sawaal likh do
-• Group me — <code>/ask tumhara sawaal</code> ya bot ko @mention karo,
-  ya bot ke message par reply karo
+Ask me anything from <b>Agricultural Extension</b> and allied subjects.
+I answer in <b>English</b> by default — ask in Hindi or Hinglish and I will reply
+in the same language.
+
+<b>How to ask</b>
+• <b>Private chat</b> — just type your question
+• <b>In a group</b> — use <code>/ask your question</code>, or @mention me,
+  or reply to any of my messages
 
 <b>Commands</b>
-/ask &lt;sawaal&gt; — notes se jawab
+/ask &lt;question&gt; — get an answer
 /quiz &lt;topic&gt; — 5 MCQ practice questions
-/lang auto|hi|en|hinglish — jawab ki bhasha
-/stats — bot ka usage
-/help — ye message
+/lang auto|en|hi|hinglish — set answer language
+/contact — reach Tripathi Sir
+/stats — bot usage
+/help — this message
 
-<b>Tip:</b> sawaal jitna specific hoga, jawab utna accurate. 👍"""
+<b>Tip:</b> the more specific your question, the sharper the answer. 👍
+
+👥 Join our group: {glink}"""
 
 
 def cmd_sources(chat, msg, uid):
@@ -341,8 +548,8 @@ def cmd_sources(chat, msg, uid):
         if len(srcs) > 80:
             txt += f"\n… +{len(srcs) - 80} aur"
     else:
-        txt = (f"📚 Bot ke paas <b>{len(srcs)}</b> books/notes ka poora content hai "
-               f"(<b>{KB.meta.get('chunks', 0)}</b> passages).\nSeedha sawaal poochho!")
+        txt = (f"📚 I have the full content of <b>{len(srcs)}</b> books and notes "
+               f"(<b>{KB.meta.get('chunks', 0)}</b> passages).\nJust ask your question!")
     tg("sendMessage", chat_id=chat, text=txt[:4000], parse_mode="HTML",
        reply_to_message_id=msg["message_id"])
 
@@ -385,10 +592,15 @@ def handle(msg):
     if m:
         cmd, arg = m.group(1).lower(), m.group(2).strip()
         if cmd in ("start", "help"):
-            tg("sendMessage", chat_id=chat, text=HELP.format(name=BOT_NAME),
-               parse_mode="HTML"); return
+            tg("sendMessage", chat_id=chat,
+               text=HELP.format(name=BOT_NAME, glink=GROUP_LINK),
+               parse_mode="HTML", disable_web_page_preview=True); return
         if cmd == "sources":
             cmd_sources(chat, msg, uid); return
+        if cmd in ("contact", "admin", "owner"):
+            tg("sendMessage", chat_id=chat, text=CONTACT_MSG, parse_mode="HTML",
+               disable_web_page_preview=True, reply_to_message_id=msg["message_id"])
+            return
         if cmd == "stats":
             cmd_stats(chat, msg); return
         if cmd == "lang":
@@ -399,24 +611,25 @@ def handle(msg):
                    parse_mode="HTML", reply_to_message_id=msg["message_id"])
             else:
                 tg("sendMessage", chat_id=chat,
-                   text="Use: /lang auto | hi | en | hinglish")
+                   text="Usage: /lang auto | en | hi | hinglish")
             return
         if cmd == "quiz":
             if not rate_ok(uid):
-                send(chat, "⏳ Thoda ruko — limit lag gayi. 1 ghante baad try karo.",
+                send(chat, "⏳ Hourly limit reached. Please try again in a while.",
                      reply_to=msg["message_id"]); return
             typing(chat)
             try:
                 send(chat, make_quiz(arg), reply_to=msg["message_id"])
                 bump("answered")
             except Exception as e:
-                send(chat, f"😕 Quiz nahi ban paaya: {e}", reply_to=msg["message_id"])
+                send(chat, "😕 Could not build the quiz right now. Please try again.",
+                     reply_to=msg["message_id"])
             return
         if cmd in ("ask", "q", "p", "poochho"):
             text = arg
             if not text:
                 tg("sendMessage", chat_id=chat,
-                   text="Aise likho: /ask ATMA kya hai?"); return
+                   text="Write it like this:  /ask What is ATMA?"); return
         else:
             return                              # unknown command -> ignore
 
@@ -432,13 +645,34 @@ def handle(msg):
 
     lang = chat_lang(chat)
 
+    # ---- gaali / adult bhasha — sabse pehle, koi jawab nahi, sirf warning
+    if is_abusive(text):
+        weird_count(uid, add=True)
+        tg("sendMessage", chat_id=chat,
+           text=ABUSE_EN if is_english(text, lang) else ABUSE_HI,
+           parse_mode="HTML", reply_to_message_id=msg["message_id"])
+        return
+
+    # ---- pehle se tay jawab (owner, contact, "kahan se batate ho") — 0 API call
+    fx = fixed_intent(text, lang)
+    if fx:
+        bump("answered")
+        tg("sendMessage", chat_id=chat, text=fx, parse_mode="HTML",
+           disable_web_page_preview=True, reply_to_message_id=msg["message_id"])
+        return
+
+    en = is_english(text, lang)
+
     cached = cache_get(text, lang)
     if cached:
         bump("answered"); bump("cached")
-        send(chat, strip_sources(cached), reply_to=msg["message_id"]); return
+        if cached == SENTINEL:
+            send(chat, weird_reply(text, lang, uid), reply_to=msg["message_id"]); return
+        send(chat, maybe_promo(strip_sources(cached), uid, en),
+             reply_to=msg["message_id"]); return
 
     if not rate_ok(uid):
-        send(chat, "⏳ Ek ghante me sirf {} sawaal. Thodi der baad poochho 🙏"
+        send(chat, "⏳ Only {} questions per hour. Please ask again a bit later 🙏"
              .format(RATE_PER_HOUR), reply_to=msg["message_id"]); return
 
     typing(chat)
@@ -446,11 +680,15 @@ def handle(msg):
         ans = answer_question(text, lang)
         cache_put(text, lang, ans)
         bump("answered")
+        if ans == SENTINEL:
+            ans = weird_reply(text, lang, uid)
+        else:
+            ans = maybe_promo(ans, uid, en)
         send(chat, ans, reply_to=msg["message_id"])
     except Exception as e:
         traceback.print_exc()
-        send(chat, "😕 Abhi jawab nahi de paaya (free API limit ya network issue). "
-                   "Thodi der baad try karo.", reply_to=msg["message_id"])
+        send(chat, "😕 Could not answer right now (server busy). "
+                   "Please try again in a minute.", reply_to=msg["message_id"])
 
 # --------------------------------------------------------------------- health server
 
@@ -502,11 +740,12 @@ def main():
     print(f"[tg] connected as @{me.get('username')}", flush=True)
 
     tg("setMyCommands", commands=[
-        {"command": "ask", "description": "Notes se sawaal poochho"},
+        {"command": "ask", "description": "Ask a question"},
         {"command": "quiz", "description": "5 MCQ practice questions"},
-        {"command": "lang", "description": "auto | hi | en | hinglish"},
+        {"command": "lang", "description": "auto | en | hi | hinglish"},
+        {"command": "contact", "description": "Reach Tripathi Sir"},
         {"command": "stats", "description": "Bot usage"},
-        {"command": "help", "description": "Madad"},
+        {"command": "help", "description": "How to use this bot"},
     ])
     tg("deleteWebhook", drop_pending_updates=True)
 
