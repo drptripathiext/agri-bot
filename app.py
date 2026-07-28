@@ -41,6 +41,9 @@ def db():
                     chat TEXT PRIMARY KEY, lang TEXT)""")
     c.execute("""CREATE TABLE IF NOT EXISTS stats(
                     k TEXT PRIMARY KEY, v INTEGER)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS qlog(
+                    ts INTEGER, uid TEXT, name TEXT, uname TEXT,
+                    chat TEXT, ctitle TEXT, ctype TEXT, q TEXT, kind TEXT)""")
     return c
 
 
@@ -54,6 +57,58 @@ def get_stat(key):
     with db() as c:
         r = c.execute("SELECT v FROM stats WHERE k=?", (key,)).fetchone()
     return r[0] if r else 0
+
+
+# --------------------------------------------------------------- admin logging
+
+KIND_ICON = {"q": "❓", "weird": "🤨", "abuse": "🚫", "info": "ℹ️", "quiz": "📝"}
+
+
+def who(msg):
+    """Message bhejne wale ka naam nikalo."""
+    f = msg.get("from", {}) or {}
+    name = " ".join(x for x in [f.get("first_name"), f.get("last_name")] if x) or "Unknown"
+    ch = msg.get("chat", {}) or {}
+    return {
+        "uid": str(f.get("id", 0)),
+        "name": name,
+        "uname": f.get("username", ""),
+        "chat": str(ch.get("id", 0)),
+        "ctitle": ch.get("title", "") or "Private chat",
+        "ctype": ch.get("type", ""),
+    }
+
+
+def log_q(w, question, kind="q"):
+    with db() as c:
+        c.execute("INSERT INTO qlog VALUES(?,?,?,?,?,?,?,?,?)",
+                  (int(time.time()), w["uid"], w["name"], w["uname"],
+                   w["chat"], w["ctitle"], w["ctype"], question[:500], kind))
+        c.execute("DELETE FROM qlog WHERE rowid NOT IN "
+                  "(SELECT rowid FROM qlog ORDER BY ts DESC LIMIT 3000)")
+
+
+def watch_on():
+    with db() as c:
+        r = c.execute("SELECT lang FROM settings WHERE chat='__watch__'").fetchone()
+    return (r[0] if r else "on") == "on"
+
+
+def notify_admin(w, question, kind="q"):
+    """Admin ke DM me live copy bhejo — ye permanent record hai."""
+    if not ADMIN_ID or w["uid"] == ADMIN_ID:
+        return
+    if kind != "abuse" and not watch_on():
+        return
+    uname = f" (@{w['uname']})" if w["uname"] else ""
+    place = ("💬 Private" if w["ctype"] == "private"
+             else f"👥 {html.escape(w['ctitle'][:40])}")
+    txt = (f"{KIND_ICON.get(kind, '❓')} <b>{html.escape(w['name'][:40])}</b>"
+           f"{html.escape(uname)}\n"
+           f"<code>{w['uid']}</code> · {place}\n\n"
+           f"{html.escape(question[:800])}")
+    tg("sendMessage", chat_id=ADMIN_ID, text=txt, parse_mode="HTML",
+       disable_web_page_preview=True)
 
 
 def norm_q(q):
@@ -554,12 +609,119 @@ def cmd_sources(chat, msg, uid):
        reply_to_message_id=msg["message_id"])
 
 
-def cmd_stats(chat, msg):
+def is_admin(uid):
+    return bool(ADMIN_ID) and str(uid) == ADMIN_ID
+
+
+def _ago(ts):
+    d = int(time.time()) - ts
+    if d < 60:
+        return f"{d}s"
+    if d < 3600:
+        return f"{d // 60}m"
+    if d < 86400:
+        return f"{d // 3600}h"
+    return f"{d // 86400}d"
+
+
+def cmd_log(chat, msg, arg):
+    n = 15
+    m = re.search(r"\d+", arg or "")
+    if m:
+        n = max(1, min(50, int(m.group())))
+    with db() as c:
+        rows = c.execute("SELECT ts,name,uname,ctitle,ctype,q,kind FROM qlog "
+                         "ORDER BY ts DESC LIMIT ?", (n,)).fetchall()
+    if not rows:
+        tg("sendMessage", chat_id=chat, text="No questions logged yet."); return
+    out = [f"🕘 <b>Last {len(rows)} questions</b>\n"]
+    for ts, name, uname, ctitle, ctype, q, kind in rows:
+        tag = f"@{uname}" if uname else name[:18]
+        place = "DM" if ctype == "private" else ctitle[:16]
+        out.append(f"{KIND_ICON.get(kind,'❓')} <b>{html.escape(tag)}</b> "
+                   f"<i>{place}</i> · {_ago(ts)} ago\n{html.escape(q[:160])}\n")
+    tg("sendMessage", chat_id=chat, text="\n".join(out)[:4000], parse_mode="HTML",
+       disable_web_page_preview=True)
+
+
+def cmd_users(chat, msg):
+    with db() as c:
+        rows = c.execute("""SELECT uid, MAX(name), MAX(uname), COUNT(*) n,
+                                   SUM(kind='abuse'), SUM(kind='weird'), MAX(ts)
+                            FROM qlog GROUP BY uid ORDER BY n DESC LIMIT 25""").fetchall()
+        tot = c.execute("SELECT COUNT(*), COUNT(DISTINCT uid) FROM qlog").fetchone()
+    if not rows:
+        tg("sendMessage", chat_id=chat, text="No data yet."); return
+    out = [f"👥 <b>{tot[1]} users · {tot[0]} questions</b>\n"]
+    for uid, name, uname, n, ab, wd, ts in rows:
+        tag = f"@{uname}" if uname else (name or uid)[:20]
+        flags = ("  🚫" + str(ab) if ab else "") + ("  🤨" + str(wd) if wd else "")
+        out.append(f"<b>{n:>3}</b>  {html.escape(tag)}  <i>{_ago(ts)}</i>{flags}")
+    tg("sendMessage", chat_id=chat, text="\n".join(out)[:4000], parse_mode="HTML",
+       disable_web_page_preview=True)
+
+
+def cmd_find(chat, msg, arg):
+    if not arg:
+        tg("sendMessage", chat_id=chat, text="Usage: /find <word>"); return
+    with db() as c:
+        rows = c.execute("SELECT ts,name,uname,q,kind FROM qlog WHERE q LIKE ? "
+                         "ORDER BY ts DESC LIMIT 20", (f"%{arg}%",)).fetchall()
+    if not rows:
+        tg("sendMessage", chat_id=chat, text=f"Nothing found for “{arg}”."); return
+    out = [f"🔍 <b>{len(rows)} match(es) for “{html.escape(arg)}”</b>\n"]
+    for ts, name, uname, q, kind in rows:
+        tag = f"@{uname}" if uname else (name or "")[:18]
+        out.append(f"{KIND_ICON.get(kind,'❓')} <b>{html.escape(tag)}</b> · "
+                   f"{_ago(ts)} ago\n{html.escape(q[:160])}\n")
+    tg("sendMessage", chat_id=chat, text="\n".join(out)[:4000], parse_mode="HTML",
+       disable_web_page_preview=True)
+
+
+def cmd_watch(chat, arg):
+    a = (arg or "").strip().lower()
+    if a in ("on", "off"):
+        with db() as c:
+            c.execute("INSERT OR REPLACE INTO settings VALUES('__watch__',?)", (a,))
+        state = a
+    else:
+        state = "on" if watch_on() else "off"
+    tg("sendMessage", chat_id=chat, parse_mode="HTML",
+       text=(f"👁️ Live forwarding is <b>{state}</b>.\n"
+             "Use <code>/watch on</code> or <code>/watch off</code>.\n"
+             "<i>Abusive messages are always forwarded.</i>"))
+
+
+ADMIN_HELP = """🔐 <b>Admin commands</b>
+
+/log [n] — last n questions (default 15, max 50)
+/users — who is asking, how much, and their flags
+/find &lt;word&gt; — search everything ever asked
+/watch on|off — live copy of every question in your DM
+/stats — totals
+
+<b>Icons</b>
+❓ normal · 🤨 off-topic · 🚫 abusive · ℹ️ about-the-bot
+
+<i>Note: this log lives on the server and resets whenever Render restarts
+the bot. Your DM copies (/watch on) are permanent — that is your real record.</i>"""
+
+
+def cmd_stats(chat, msg, uid):
     txt = (f"📊 <b>{BOT_NAME}</b>\n"
            f"Questions answered: <b>{get_stat('answered')}</b>\n"
            f"From cache (free): <b>{get_stat('cached')}</b>\n"
            f"Knowledge: <b>{KB.meta.get('chunks',0)}</b> passages from "
            f"<b>{len(KB.meta.get('sources',[]))}</b> sources")
+    if is_admin(uid):
+        with db() as c:
+            n, u, ab, wd = c.execute(
+                "SELECT COUNT(*), COUNT(DISTINCT uid), SUM(kind='abuse'), "
+                "SUM(kind='weird') FROM qlog").fetchone()
+        txt += (f"\n\n🔐 <b>Admin</b>\nLogged: <b>{n or 0}</b> questions from "
+                f"<b>{u or 0}</b> users\nOff-topic: <b>{wd or 0}</b> · "
+                f"Abusive: <b>{ab or 0}</b>\nLive forwarding: "
+                f"<b>{'on' if watch_on() else 'off'}</b>  ·  /adminhelp")
     tg("sendMessage", chat_id=chat, text=txt, parse_mode="HTML",
        reply_to_message_id=msg["message_id"])
 
@@ -587,10 +749,29 @@ def handle(msg):
     if not text:
         return
 
+    w = who(msg)
+
     # ---- commands
     m = re.match(r"^/(\w+)(?:@[\w_]+)?\s*(.*)$", text, re.S)
     if m:
         cmd, arg = m.group(1).lower(), m.group(2).strip()
+
+        # ---- admin-only (sirf tumhe dikhenge, baaki ke liye chup)
+        if cmd in ("log", "users", "find", "watch", "adminhelp"):
+            if not is_admin(uid):
+                return
+            if cmd == "log":
+                cmd_log(chat, msg, arg)
+            elif cmd == "users":
+                cmd_users(chat, msg)
+            elif cmd == "find":
+                cmd_find(chat, msg, arg)
+            elif cmd == "watch":
+                cmd_watch(chat, arg)
+            else:
+                tg("sendMessage", chat_id=chat, text=ADMIN_HELP, parse_mode="HTML")
+            return
+
         if cmd in ("start", "help"):
             tg("sendMessage", chat_id=chat,
                text=HELP.format(name=BOT_NAME, glink=GROUP_LINK),
@@ -602,7 +783,7 @@ def handle(msg):
                disable_web_page_preview=True, reply_to_message_id=msg["message_id"])
             return
         if cmd == "stats":
-            cmd_stats(chat, msg); return
+            cmd_stats(chat, msg, uid); return
         if cmd == "lang":
             a = arg.lower()
             if a in LANG_RULE:
@@ -648,6 +829,7 @@ def handle(msg):
     # ---- gaali / adult bhasha — sabse pehle, koi jawab nahi, sirf warning
     if is_abusive(text):
         weird_count(uid, add=True)
+        log_q(w, text, "abuse"); notify_admin(w, text, "abuse")
         tg("sendMessage", chat_id=chat,
            text=ABUSE_EN if is_english(text, lang) else ABUSE_HI,
            parse_mode="HTML", reply_to_message_id=msg["message_id"])
@@ -657,6 +839,7 @@ def handle(msg):
     fx = fixed_intent(text, lang)
     if fx:
         bump("answered")
+        log_q(w, text, "info"); notify_admin(w, text, "info")
         tg("sendMessage", chat_id=chat, text=fx, parse_mode="HTML",
            disable_web_page_preview=True, reply_to_message_id=msg["message_id"])
         return
@@ -666,6 +849,8 @@ def handle(msg):
     cached = cache_get(text, lang)
     if cached:
         bump("answered"); bump("cached")
+        kind = "weird" if cached == SENTINEL else "q"
+        log_q(w, text, kind); notify_admin(w, text, kind)
         if cached == SENTINEL:
             send(chat, weird_reply(text, lang, uid), reply_to=msg["message_id"]); return
         send(chat, maybe_promo(strip_sources(cached), uid, en),
@@ -680,6 +865,8 @@ def handle(msg):
         ans = answer_question(text, lang)
         cache_put(text, lang, ans)
         bump("answered")
+        kind = "weird" if ans == SENTINEL else "q"
+        log_q(w, text, kind); notify_admin(w, text, kind)
         if ans == SENTINEL:
             ans = weird_reply(text, lang, uid)
         else:
