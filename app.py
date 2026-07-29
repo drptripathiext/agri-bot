@@ -17,6 +17,7 @@ import requests
 import llm
 import syllabus
 import interview
+import special
 from kb_search import KnowledgeBase
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -706,7 +707,21 @@ def answer_interview(q, lang):
     return strip_sources(llm.complete(sysmsg, user, temperature=0.4))
 
 
-def answer_question(q, lang):
+def answer_special(q, lang):
+    """Uske liye alag andaaz — sawaal ka sahi jawab, apne tareeke se."""
+    sysmsg = special.SYSTEM.format(
+        name=special.NAME, first=special.FIRST, owner=OWNER_NAME,
+        lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
+    if special.is_birthday():
+        sysmsg += special.BIRTHDAY_NOTE
+    hits = KB.search(q, top_k=5)
+    ctx = KB.build_context(hits, max_chars=4000)
+    user = (f"REFERENCE MATERIAL (use it if her question is academic):\n{ctx}\n\n"
+            f"SHE SAID: {q}") if ctx else f"SHE SAID: {q}"
+    return strip_sources(llm.complete(sysmsg, user, temperature=0.75))
+
+
+def answer_question(q, lang, uid=None, w=None, chat_type="private"):
     """Stage 1: notes se. Stage 2: web/Google se. Ya SENTINEL agar sawaal bakwaas hai."""
     if interview.is_interview(q):
         return answer_interview(q, lang)
@@ -1006,7 +1021,8 @@ def handle(msg):
     private = msg["chat"]["type"] == "private"
 
     # ---- pehli baar: sirf ek baar naam poochho (sirf private chat me)
-    if ASK_NAME and private:
+    if ASK_NAME and private and not special.is_special(
+            uid, w["name"], get_person(uid)[0] or "", "private"):
         name, state = get_person(uid)
         if state == "await_name" and not text.startswith("/"):
             nm = clean_name(text)
@@ -1071,6 +1087,11 @@ def handle(msg):
             return
 
         if cmd in ("start", "help"):
+            if special.is_special(uid, w["name"], get_person(uid)[0] or "",
+                                  msg["chat"]["type"]):
+                tg("sendMessage", chat_id=chat,
+                   text=special.GREETING.format(first=special.FIRST))
+                return
             tg("sendMessage", chat_id=chat,
                text=HELP.format(name=BOT_NAME, glink=GROUP_LINK),
                parse_mode="HTML", disable_web_page_preview=True); return
@@ -1149,6 +1170,20 @@ def handle(msg):
 
     lang = chat_lang(chat)
 
+    # ---- uske liye alag rasta: koi filter nahi, koi cache nahi, koi promo nahi
+    her = special.is_special(uid, w["name"], get_person(uid)[0] or "",
+                             msg["chat"]["type"])
+    if her:
+        typing(chat)
+        try:
+            send(chat, answer_special(text, lang), reply_to=msg["message_id"])
+            bump("answered")
+        except Exception:
+            traceback.print_exc()
+            send(chat, "Give me a moment and say that again? 🌸",
+                 reply_to=msg["message_id"])
+        return
+
     # ---- gaali / adult bhasha — sabse pehle, koi jawab nahi, sirf warning
     if is_abusive(text):
         weird_count(uid, add=True)
@@ -1186,7 +1221,7 @@ def handle(msg):
     typing(chat)
     t0 = time.time()
     try:
-        ans = answer_question(text, lang)
+        ans = answer_question(text, lang, uid, w, msg["chat"]["type"])
         print(f"[time] {time.time()-t0:.1f}s — {text[:50]}", flush=True)
         cache_put(text, lang, ans)
         bump("answered")
