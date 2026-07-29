@@ -949,6 +949,7 @@ ADMIN_HELP = """🔐 <b>Admin commands</b>
 /find &lt;word&gt; — search everything ever asked
 /watch on|off — live copy of every question in your DM
 /diag — live API health check (use this if answers start failing)
+/models — which Gemini models your key can use
 /stats — totals
 
 <b>Icons</b>
@@ -1023,10 +1024,14 @@ def handle(msg):
             # sawaal poochh liya naam ki jagah — Telegram wala naam le lo, aage badho
             set_person(uid, name=w["name"], state="ok")
         elif not name and not state:
-            set_person(uid, state="await_name")
-            tg("sendMessage", chat_id=chat, text=ASK_NAME_MSG, parse_mode="HTML",
-               reply_to_message_id=msg["message_id"])
-            return
+            # commands ko mat roko — sirf /start par naam poochho
+            if text.startswith("/") and not re.match(r"^/start\b", text, re.I):
+                set_person(uid, name=w["name"], state="ok")
+            else:
+                set_person(uid, state="await_name")
+                tg("sendMessage", chat_id=chat, text=ASK_NAME_MSG,
+                   parse_mode="HTML", reply_to_message_id=msg["message_id"])
+                return
 
     # ---- commands
     m = re.match(r"^/(\w+)(?:@[\w_]+)?\s*(.*)$", text, re.S)
@@ -1034,10 +1039,18 @@ def handle(msg):
         cmd, arg = m.group(1).lower(), m.group(2).strip()
 
         # ---- admin-only (sirf tumhe dikhenge, baaki ke liye chup)
-        if cmd in ("log", "users", "find", "watch", "adminhelp", "diag"):
+        if cmd in ("log", "users", "find", "watch", "adminhelp", "diag", "models"):
             if not is_admin(uid):
                 return
-            if cmd == "diag":
+            if cmd == "models":
+                names = llm.list_models() or ["(could not fetch)"]
+                tg("sendMessage", chat_id=chat, parse_mode="HTML",
+                   text=("🧩 <b>Models on your key</b>\nCurrent: <code>"
+                         + html.escape(llm.gemini_model()) + "</code>\n\n<pre>"
+                         + html.escape("\n".join(names[:60]))
+                         + "</pre>\n\nSet <code>GEMINI_MODEL</code> in Render "
+                           "to force one."))
+            elif cmd == "diag":
                 typing(chat)
                 try:
                     rep = llm.diagnose()
@@ -1259,7 +1272,7 @@ def main():
     threading.Thread(target=health_server, daemon=True).start()
     init_db()
     threading.Thread(target=keep_awake, daemon=True).start()
-    threading.Thread(target=llm.gemini_model, daemon=True).start()   # warm-up
+    threading.Thread(target=llm.warmup, daemon=True).start()   # providers warm-up
 
     print("[kb] loading knowledge base…", flush=True)
     KB = KnowledgeBase()
