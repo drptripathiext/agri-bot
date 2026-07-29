@@ -11,10 +11,12 @@ Optional:
     BOT_NAME, ADMIN_ID, RATE_PER_HOUR, ALLOW_OUTSIDE_NOTES
 """
 import os, re, io, json, time, html, sqlite3, hashlib, threading, traceback
+from concurrent.futures import ThreadPoolExecutor
 import requests
 
 import llm
 import syllabus
+import interview
 from kb_search import KnowledgeBase
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -27,13 +29,29 @@ ALLOW_OUTSIDE = os.environ.get("ALLOW_OUTSIDE_NOTES", "1") == "1"
 SHOW_SOURCES = os.environ.get("SHOW_SOURCES", "0") == "1"
 DB_PATH = os.environ.get("DB_PATH", "/tmp/agribot.db")
 
+WORKERS = int(os.environ.get("WORKERS", "12"))
+
 KB = None
 ME = {}
+BUSY = set()                      # jin users ka sawaal abhi chal raha hai
+_busy_lock = threading.Lock()
 
 # --------------------------------------------------------------------- storage
 
+_db_ready = False
+
+
 def db():
+    global _db_ready
     c = sqlite3.connect(DB_PATH, timeout=30)
+    if not _db_ready:                       # WAL = kai threads ek saath likh sakte hain
+        try:
+            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            pass
+        _db_ready = True
+    c.execute("PRAGMA busy_timeout=15000")
     c.execute("""CREATE TABLE IF NOT EXISTS cache(
                     k TEXT PRIMARY KEY, q TEXT, a TEXT, ts INTEGER)""")
     c.execute("""CREATE TABLE IF NOT EXISTS usage(
@@ -280,11 +298,18 @@ OWNER_LINK = "https://t.me/asktripathii"
 OWNER_PHONE = "+91 85779 16450"
 PROMO_EVERY = int(os.environ.get("PROMO_EVERY", "10"))   # har N-ve sawaal par group promo
 
-# Ajeeb / bedhanga sawaal — pehli aur doosri baar
+# --- Off-topic sawaal: 3 step escalation ---
+# 1st baar — bilkul polite
+POLITE_HI = ("Ye mera area nahi hai 😊 Main Agricultural Extension aur ASRB/ARS exam ki "
+             "taiyari me help karta hoon.\nSyllabus se kuch bhi poochho — main hoon yahan!")
+POLITE_EN = ("That is outside my area 😊 I help with Agricultural Extension and "
+             "ASRB / ARS exam preparation.\nAsk me anything from the syllabus — I am here!")
+
+# 2nd baar — halka sa taunt
 WEIRD_HI = "iska answer to sirf Tripathi Sir de payenge, mai nahi 🙏"
 WEIRD_EN = "Ask Tripathi Sir, only He can help you now 🙏"
 
-# Baar-baar pareshan kare to (teesri baar se)
+# 3rd baar se — warning
 ANGRY_HI = ("Bas karo ab 😤 Yahi karte rahoge to exam nahi niklega.\n"
             "Padhai par dhyan do — sawaal poochho, main jawab dunga.")
 ANGRY_EN = ("Enough now 😤 Keep doing this and you will never clear the exam.\n"
@@ -539,11 +564,14 @@ def weird_count(uid, add=False):
 
 
 def weird_reply(q, lang, uid):
+    """Pehle polite, phir taunt, phir warning."""
     en = is_english(q, lang)
     n = weird_count(uid, add=True)
-    if n >= 3:                                   # baar-baar pareshan kar raha hai
-        return ANGRY_EN if en else ANGRY_HI
-    return WEIRD_EN if en else WEIRD_HI
+    if n <= 1:
+        return POLITE_EN if en else POLITE_HI
+    if n == 2:
+        return WEIRD_EN if en else WEIRD_HI
+    return ANGRY_EN if en else ANGRY_HI
 
 
 _SYL_RE = re.compile(r"(?i)\b(syllabus|syllabi|silabus|sylabus|paathyakram|"
@@ -574,8 +602,24 @@ def local_fallback(q):
             "Send /syllabus 5 to get the full text of any unit.")
 
 
+def answer_interview(q, lang):
+    """ARS/ASRB interview ke sawaal — scientist-mentor ki tarah jawab do."""
+    sysmsg = interview.SYSTEM.format(
+        name=BOT_NAME, blueprint=interview.BLUEPRINT,
+        lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
+    hits = KB.search(q, top_k=4)
+    ctx = KB.build_context(hits, max_chars=3000)
+    user = (f"REFERENCE MATERIAL (use only if relevant):\n{ctx}\n\n"
+            f"STUDENT'S QUESTION: {q}") if ctx else q
+    bump("interview")
+    return strip_sources(llm.complete(sysmsg, user, temperature=0.4))
+
+
 def answer_question(q, lang):
     """Stage 1: notes se. Stage 2: web/Google se. Ya SENTINEL agar sawaal bakwaas hai."""
+    if interview.is_interview(q):
+        return answer_interview(q, lang)
+
     hits = KB.search(q, top_k=8)
 
     # syllabus ka sawaal ho to official syllabus sabse upar, aur notes ka hissa chhota
@@ -660,6 +704,8 @@ in the same language.
 <b>Commands</b>
 /ask &lt;question&gt; — get an answer
 /syllabus [unit] — official ASRB NET/ARS syllabus
+/interview — ARS / ASRB interview strategy
+/mock [topic] — mock interview round (Extension by default)
 /quiz &lt;topic&gt; — 5 MCQ practice questions
 /lang auto|en|hi|hinglish — set answer language
 /contact — reach Tripathi Sir
@@ -883,6 +929,29 @@ def handle(msg):
             cmd_sources(chat, msg, uid); return
         if cmd in ("syllabus", "syl"):
             cmd_syllabus(chat, msg, arg); return
+        if cmd in ("interview", "viva"):
+            tg("sendMessage", chat_id=chat, text=interview.blueprint_summary(),
+               parse_mode="HTML", disable_web_page_preview=True,
+               reply_to_message_id=msg["message_id"])
+            return
+        if cmd == "mock":
+            if not rate_ok(uid):
+                send(chat, "⏳ Hourly limit reached. Please try again in a while.",
+                     reply_to=msg["message_id"]); return
+            typing(chat)
+            try:
+                topic = ("The candidate is from Agricultural Extension. "
+                         + (f"Focus the questions on: {arg}." if arg else
+                            "Cover the breadth of the Extension syllabus."))
+                out = llm.complete(interview.MOCK_SYSTEM.format(topic_line=topic),
+                                   "Conduct the mock interview now.", temperature=0.7)
+                send(chat, strip_sources(out), reply_to=msg["message_id"])
+                bump("answered"); bump("interview")
+            except Exception:
+                traceback.print_exc()
+                send(chat, "😕 Could not build the mock round. Please try again.",
+                     reply_to=msg["message_id"])
+            return
         if cmd in ("contact", "admin", "owner"):
             tg("sendMessage", chat_id=chat, text=CONTACT_MSG, parse_mode="HTML",
                disable_web_page_preview=True, reply_to_message_id=msg["message_id"])
@@ -1045,6 +1114,8 @@ def main():
     tg("setMyCommands", commands=[
         {"command": "ask", "description": "Ask a question"},
         {"command": "syllabus", "description": "Official ASRB NET / ARS syllabus"},
+        {"command": "interview", "description": "ARS / ASRB interview strategy"},
+        {"command": "mock", "description": "Mock interview round (Extension)"},
         {"command": "quiz", "description": "5 MCQ practice questions"},
         {"command": "lang", "description": "auto | en | hi | hinglish"},
         {"command": "contact", "description": "Reach Tripathi Sir"},
@@ -1052,6 +1123,20 @@ def main():
         {"command": "help", "description": "How to use this bot"},
     ])
     tg("deleteWebhook", drop_pending_updates=True)
+
+    # ---- 20-30 log ek saath: har sawaal alag thread me, main loop kabhi ruke nahi
+    pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="q")
+    print(f"[bot] {WORKERS} worker threads ready", flush=True)
+
+    def run(msg):
+        uid = str((msg.get("from") or {}).get("id", 0))
+        try:
+            handle(msg)
+        except Exception:
+            traceback.print_exc()
+        finally:
+            with _busy_lock:
+                BUSY.discard(uid)
 
     offset = None
     while True:
@@ -1066,11 +1151,19 @@ def main():
             for upd in d["result"]:
                 offset = upd["update_id"] + 1
                 msg = upd.get("message")
-                if msg:
-                    try:
-                        handle(msg)
-                    except Exception:
-                        traceback.print_exc()
+                if not msg:
+                    continue
+                uid = str((msg.get("from") or {}).get("id", 0))
+                text = (msg.get("text") or "").strip()
+                # ek user ek waqt me ek hi sawaal — queue flood na ho
+                with _busy_lock:
+                    if uid in BUSY and not text.startswith("/"):
+                        tg("sendMessage", chat_id=msg["chat"]["id"],
+                           reply_to_message_id=msg["message_id"],
+                           text="⏳ Still working on your previous question…")
+                        continue
+                    BUSY.add(uid)
+                pool.submit(run, msg)
         except requests.exceptions.ReadTimeout:
             continue
         except Exception as e:

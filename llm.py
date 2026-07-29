@@ -10,7 +10,9 @@ Env vars (comma-separate multiple keys for more free quota):
 import os, json, time, threading
 import requests
 
-TIMEOUT = 60
+TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "180"))
+RETRIES = int(os.environ.get("LLM_RETRIES", "3"))      # per variant
+BACKOFF = float(os.environ.get("LLM_BACKOFF", "2"))    # seconds
 _lock = threading.Lock()
 
 
@@ -116,10 +118,12 @@ def _gemini(system, user, temperature, use_search=False):
     keys = GEMINI.keys or []
 
     for label, body in _variants(system, user, temperature, use_search):
-        for ki in range(max(1, len(keys))):
+        # har variant ko RETRIES baar: fail -> 2s ruko -> dubara -> 4s -> dubara
+        for attempt in range(max(1, RETRIES)):
             key = GEMINI.next()
             if not key:
                 break
+            fatal = False
             try:
                 r = requests.post(url, params={"key": key}, json=body, timeout=TIMEOUT)
                 if r.status_code == 200:
@@ -133,14 +137,19 @@ def _gemini(system, user, temperature, use_search=False):
                         return txt
                     last = (f"[{label}] empty, finishReason="
                             f"{cand.get('finishReason','?')}")
+                    fatal = True                    # retry se fayda nahi, agla variant
                 else:
                     last = f"[{label}] HTTP {r.status_code}: {r.text[:220]}"
-                    if r.status_code == 429 and ki == 0:
-                        time.sleep(4)               # per-minute limit -> thoda ruko
-                        continue
+                    # 400 = request hi galat hai -> retry bekaar, agla variant lo
+                    if r.status_code == 400:
+                        fatal = True
             except Exception as e:
                 last = f"[{label}] {type(e).__name__}: {e}"
             print(f"[llm] {last}", flush=True)
+            if fatal:
+                break
+            if attempt < RETRIES - 1:
+                time.sleep(BACKOFF * (attempt + 1))   # 2s, phir 4s
     LAST_ERROR["when"] = int(time.time())
     LAST_ERROR["detail"] = last
     raise RuntimeError(f"gemini failed: {last}")
