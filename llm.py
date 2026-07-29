@@ -7,7 +7,7 @@ Env vars (comma-separate multiple keys for more free quota):
     OPENROUTER_API_KEY  -> https://openrouter.ai/keys                (fallback)
     GEMINI_MODEL        -> optional override, e.g. gemini-2.5-flash
 """
-import os, json, time, itertools, threading
+import os, json, time, threading
 import requests
 
 TIMEOUT = 60
@@ -75,79 +75,104 @@ def gemini_model():
     return _gemini_model
 
 
+SAFETY = [{"category": c, "threshold": "BLOCK_ONLY_HIGH"} for c in
+          ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
+           "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
+
+LAST_ERROR = {"when": 0, "detail": ""}      # /diag ke liye
+
+
+def _variants(system, user, temperature, use_search):
+    """Sabse feature-rich request se sabse simple tak — jo chal jaye wahi sahi."""
+    def base(gen, extra=None):
+        b = {"systemInstruction": {"parts": [{"text": system}]},
+             "contents": [{"role": "user", "parts": [{"text": user}]}],
+             "generationConfig": gen,
+             "safetySettings": SAFETY}
+        if extra:
+            b.update(extra)
+        return b
+
+    full = {"temperature": temperature, "maxOutputTokens": 2048}
+    nothink = dict(full, thinkingConfig={"thinkingBudget": 0})
+    out = []
+    if use_search:
+        out.append(("search+nothink", base(nothink, {"tools": [{"google_search": {}}]})))
+        out.append(("search", base(full, {"tools": [{"google_search": {}}]})))
+    out.append(("nothink", base(nothink)))
+    out.append(("plain", base(full)))
+    # sabse compatible: na system_instruction, na safety, na config
+    out.append(("bare", {"contents": [{"role": "user",
+                                       "parts": [{"text": system + "\n\n" + user}]}]}))
+    return out
+
+
 def _gemini(system, user, temperature, use_search=False):
-    """
-    Gemini call with three self-healing retries:
-      • 'thinking' models poora output-budget soch me kha jaate hain -> thinkingBudget 0
-      • google_search tool na chale / quota khatam -> bina search dubara
-      • ek key ka quota khatam -> agli key
-    """
+    """Har variant ko har key ke saath try karo; 429 par thoda ruk kar dubara."""
     model = gemini_model()
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{model}:generateContent")
     last = "unknown error"
-    no_think = True                       # pehle thinking off ke saath try karo
-    search = use_search
-    attempts = max(1, len(GEMINI.keys)) + 2
+    keys = GEMINI.keys or []
 
-    for _ in range(attempts):
-        key = GEMINI.next()
-        if not key:
-            break
-        gen = {"temperature": temperature, "maxOutputTokens": 2048}
-        if no_think:
-            gen["thinkingConfig"] = {"thinkingBudget": 0}
-        body = {
-            "system_instruction": {"parts": [{"text": system}]},
-            "contents": [{"role": "user", "parts": [{"text": user}]}],
-            "generationConfig": gen,
-            "safetySettings": [
-                {"category": c, "threshold": "BLOCK_ONLY_HIGH"} for c in
-                ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
-                 "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]
-            ],
-        }
-        if search:
-            body["tools"] = [{"google_search": {}}]
+    for label, body in _variants(system, user, temperature, use_search):
+        for ki in range(max(1, len(keys))):
+            key = GEMINI.next()
+            if not key:
+                break
+            try:
+                r = requests.post(url, params={"key": key}, json=body, timeout=TIMEOUT)
+                if r.status_code == 200:
+                    d = r.json()
+                    cand = (d.get("candidates") or [{}])[0]
+                    parts = (cand.get("content") or {}).get("parts") or []
+                    txt = "".join(p.get("text", "") for p in parts).strip()
+                    if txt:
+                        if label != "search+nothink":
+                            print(f"[llm] ok via variant '{label}'", flush=True)
+                        return txt
+                    last = (f"[{label}] empty, finishReason="
+                            f"{cand.get('finishReason','?')}")
+                else:
+                    last = f"[{label}] HTTP {r.status_code}: {r.text[:220]}"
+                    if r.status_code == 429 and ki == 0:
+                        time.sleep(4)               # per-minute limit -> thoda ruko
+                        continue
+            except Exception as e:
+                last = f"[{label}] {type(e).__name__}: {e}"
+            print(f"[llm] {last}", flush=True)
+    LAST_ERROR["when"] = int(time.time())
+    LAST_ERROR["detail"] = last
+    raise RuntimeError(f"gemini failed: {last}")
+
+
+def diagnose():
+    """Live probe — /diag command ke liye. Exact status aur body wapas karta hai."""
+    model = gemini_model()
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{model}:generateContent")
+    key = GEMINI.next()
+    out = [f"model: {model}", f"keys: {len(GEMINI.keys)} gemini, "
+           f"{len(GROQ.keys)} groq, {len(OPENROUTER.keys)} openrouter"]
+    if not key:
+        out.append("NO GEMINI KEY"); return "\n".join(out)
+    for label, body in _variants("You are a test.", "Reply with the word OK.",
+                                 0.1, True):
         try:
-            r = requests.post(url, params={"key": key}, json=body, timeout=TIMEOUT)
+            r = requests.post(url, params={"key": key}, json=body, timeout=40)
             if r.status_code == 200:
                 d = r.json()
                 cand = (d.get("candidates") or [{}])[0]
-                parts = cand.get("content", {}).get("parts") or []
+                parts = (cand.get("content") or {}).get("parts") or []
                 txt = "".join(p.get("text", "") for p in parts).strip()
-                if txt:
-                    return txt
-                fr = cand.get("finishReason", "?")
-                last = f"empty response (finishReason={fr})"
-                print(f"[llm] gemini empty, finishReason={fr}", flush=True)
-                if fr in ("MAX_TOKENS", "OTHER") and not no_think:
-                    no_think = True                 # thinking budget khatam kar do
-                    continue
-                if search:                          # search ke bina dubara
-                    search = False
-                    continue
-                continue
-
-            last = f"{r.status_code} {r.text[:200]}"
-            low = r.text.lower()
-            # thinkingConfig ye model support nahi karta
-            if no_think and r.status_code == 400 and "think" in low:
-                no_think = False
-                continue
-            # google_search tool support nahi / grounding quota khatam
-            if search and r.status_code in (400, 403, 429):
-                print("[llm] search grounding unavailable, retrying without it",
-                      flush=True)
-                search = False
-                continue
-            if r.status_code in (429, 403, 500, 503):
-                continue
+                out.append(f"{label}: 200 {'OK -> ' + txt[:30] if txt else 'EMPTY fr=' + str(cand.get('finishReason'))}")
+            else:
+                out.append(f"{label}: {r.status_code} {r.text[:150]}")
         except Exception as e:
-            last = str(e)
-            if search:
-                search = False
-    raise RuntimeError(f"gemini failed: {last}")
+            out.append(f"{label}: {type(e).__name__} {e}")
+    if LAST_ERROR["detail"]:
+        out.append(f"\nlast real failure: {LAST_ERROR['detail'][:300]}")
+    return "\n".join(out)
 
 
 def _openai_style(base, key, model, system, user, temperature, extra_headers=None):

@@ -550,14 +550,39 @@ _SYL_RE = re.compile(r"(?i)\b(syllabus|syllabi|silabus|sylabus|paathyakram|"
                      r"exam\s*pattern|course\s*content|unit\s*[-–]?\s*\d{1,2})\b")
 
 
+def local_fallback(q):
+    """AI fail ho jaye to bhi syllabus wale sawaal ka jawab file se de do."""
+    if not _SYL_RE.search(q) or not syllabus.UNITS:
+        return None
+    m = re.search(r"unit\s*[-–]?\s*(\d{1,2})", q, re.I)
+    if m:
+        u = syllabus.get_unit(int(m.group(1)))
+        if u:
+            return f"📘 Unit {u[0]}: {u[1]}\n\n{u[2]}"
+    # generic shabd hata do, warna "exam pattern" jaisa sawaal galat unit utha leta hai
+    topic = re.sub(r"(?i)\b(tell|give|show|send|please|what|which|whats|about|"
+                   r"exam|pattern|paper|marks|marking|scheme|syllabus|syllabi|"
+                   r"course|content|full|detail|details|list|asrb|icar|net|ars|"
+                   r"srf|jrf|sms|sto|batao|bata|chahiye|kya|hai|mujhe)\b", " ", q)
+    if len(re.findall(r"[a-z]{4,}", topic.lower())) >= 1:
+        hits = syllabus.find_units(topic, limit=1)
+        if hits:
+            n, t, b = hits[0]
+            return f"📘 Unit {n}: {t}\n\n{b}"
+    units = "\n".join(f"Unit {n} — {t}" for n, t, _ in syllabus.UNITS)
+    return (f"📘 {syllabus.HEADER}\n\n{units}\n\n"
+            "Send /syllabus 5 to get the full text of any unit.")
+
+
 def answer_question(q, lang):
     """Stage 1: notes se. Stage 2: web/Google se. Ya SENTINEL agar sawaal bakwaas hai."""
     hits = KB.search(q, top_k=8)
-    ctx = KB.build_context(hits)
 
-    # syllabus ka sawaal ho to official syllabus sabse upar chipka do
+    # syllabus ka sawaal ho to official syllabus sabse upar, aur notes ka hissa chhota
     if _SYL_RE.search(q):
-        ctx = syllabus.context_for(q) + "\n\n---\n\n" + ctx
+        ctx = syllabus.context_for(q) + "\n\n---\n\n" + KB.build_context(hits, 3500)
+    else:
+        ctx = KB.build_context(hits)
 
     sysmsg = SYSTEM.format(name=BOT_NAME,
                            lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]),
@@ -766,6 +791,7 @@ ADMIN_HELP = """🔐 <b>Admin commands</b>
 /users — who is asking, how much, and their flags
 /find &lt;word&gt; — search everything ever asked
 /watch on|off — live copy of every question in your DM
+/diag — live API health check (use this if answers start failing)
 /stats — totals
 
 <b>Icons</b>
@@ -826,10 +852,18 @@ def handle(msg):
         cmd, arg = m.group(1).lower(), m.group(2).strip()
 
         # ---- admin-only (sirf tumhe dikhenge, baaki ke liye chup)
-        if cmd in ("log", "users", "find", "watch", "adminhelp"):
+        if cmd in ("log", "users", "find", "watch", "adminhelp", "diag"):
             if not is_admin(uid):
                 return
-            if cmd == "log":
+            if cmd == "diag":
+                typing(chat)
+                try:
+                    rep = llm.diagnose()
+                except Exception as ex:
+                    rep = f"diagnose crashed: {ex}"
+                tg("sendMessage", chat_id=chat, parse_mode="HTML",
+                   text=f"🩺 <b>API check</b>\n<pre>{html.escape(rep[:3500])}</pre>")
+            elif cmd == "log":
                 cmd_log(chat, msg, arg)
             elif cmd == "users":
                 cmd_users(chat, msg)
@@ -945,8 +979,13 @@ def handle(msg):
         send(chat, ans, reply_to=msg["message_id"])
     except Exception as e:
         traceback.print_exc()
-        send(chat, "😕 Could not answer right now. Please try again in a minute.",
-             reply_to=msg["message_id"])
+        # AI fail — phir bhi syllabus jaisa jawab local file se de do
+        lf = local_fallback(text)
+        if lf:
+            send(chat, lf, reply_to=msg["message_id"])
+        else:
+            send(chat, "😕 Could not answer right now. Please try again in a minute.",
+                 reply_to=msg["message_id"])
         # asli error admin ke DM me — debugging ke liye
         if ADMIN_ID:
             tg("sendMessage", chat_id=ADMIN_ID, parse_mode="HTML",
