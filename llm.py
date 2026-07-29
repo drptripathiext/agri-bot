@@ -13,7 +13,13 @@ import requests
 TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "180"))
 RETRIES = int(os.environ.get("LLM_RETRIES", "3"))      # per variant
 BACKOFF = float(os.environ.get("LLM_BACKOFF", "2"))    # seconds
+MAX_OUT = int(os.environ.get("LLM_MAX_TOKENS", "1024"))
 _lock = threading.Lock()
+
+# Keep-alive session — har call par TLS handshake nahi hota, kaafi tez
+SESSION = requests.Session()
+SESSION.mount("https://", requests.adapters.HTTPAdapter(
+    pool_connections=32, pool_maxsize=64, max_retries=0))
 
 
 def _keys(name):
@@ -55,7 +61,7 @@ def gemini_model():
     key = GEMINI.next()
     if key:
         try:
-            r = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
+            r = SESSION.get("https://generativelanguage.googleapis.com/v1beta/models",
                              params={"key": key}, timeout=30)
             names = [m["name"].split("/")[-1] for m in r.json().get("models", [])
                      if "generateContent" in m.get("supportedGenerationMethods", [])]
@@ -95,7 +101,7 @@ def _variants(system, user, temperature, use_search):
             b.update(extra)
         return b
 
-    full = {"temperature": temperature, "maxOutputTokens": 2048}
+    full = {"temperature": temperature, "maxOutputTokens": MAX_OUT}
     nothink = dict(full, thinkingConfig={"thinkingBudget": 0})
     out = []
     if use_search:
@@ -125,7 +131,7 @@ def _gemini(system, user, temperature, use_search=False):
                 break
             fatal = False
             try:
-                r = requests.post(url, params={"key": key}, json=body, timeout=TIMEOUT)
+                r = SESSION.post(url, params={"key": key}, json=body, timeout=TIMEOUT)
                 if r.status_code == 200:
                     d = r.json()
                     cand = (d.get("candidates") or [{}])[0]
@@ -168,7 +174,7 @@ def diagnose():
     for label, body in _variants("You are a test.", "Reply with the word OK.",
                                  0.1, True):
         try:
-            r = requests.post(url, params={"key": key}, json=body, timeout=40)
+            r = SESSION.post(url, params={"key": key}, json=body, timeout=40)
             if r.status_code == 200:
                 d = r.json()
                 cand = (d.get("candidates") or [{}])[0]
@@ -188,12 +194,12 @@ def _openai_style(base, key, model, system, user, temperature, extra_headers=Non
     h = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     if extra_headers:
         h.update(extra_headers)
-    r = requests.post(f"{base}/chat/completions", headers=h, json={
+    r = SESSION.post(f"{base}/chat/completions", headers=h, json={
         "model": model,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
         "temperature": temperature,
-        "max_tokens": 1400,
+        "max_tokens": MAX_OUT,
     }, timeout=TIMEOUT)
     if r.status_code != 200:
         raise RuntimeError(f"{r.status_code} {r.text[:180]}")

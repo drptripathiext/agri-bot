@@ -29,7 +29,10 @@ ALLOW_OUTSIDE = os.environ.get("ALLOW_OUTSIDE_NOTES", "1") == "1"
 SHOW_SOURCES = os.environ.get("SHOW_SOURCES", "0") == "1"
 DB_PATH = os.environ.get("DB_PATH", "/tmp/agribot.db")
 
-WORKERS = int(os.environ.get("WORKERS", "12"))
+WORKERS = int(os.environ.get("WORKERS", "24"))
+TOP_K = int(os.environ.get("TOP_K", "6"))            # kitne passages LLM ko bheje
+CTX_CHARS = int(os.environ.get("CTX_CHARS", "5500"))  # kam context = tez jawab
+ASK_NAME = os.environ.get("ASK_NAME", "1") == "1"
 
 KB = None
 ME = {}
@@ -38,31 +41,45 @@ _busy_lock = threading.Lock()
 
 # --------------------------------------------------------------------- storage
 
-_db_ready = False
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS cache(k TEXT PRIMARY KEY, q TEXT, a TEXT, ts INTEGER);
+CREATE TABLE IF NOT EXISTS usage(uid TEXT, ts INTEGER);
+CREATE TABLE IF NOT EXISTS settings(chat TEXT PRIMARY KEY, lang TEXT);
+CREATE TABLE IF NOT EXISTS stats(k TEXT PRIMARY KEY, v INTEGER);
+CREATE TABLE IF NOT EXISTS weird(uid TEXT, ts INTEGER);
+CREATE TABLE IF NOT EXISTS ucount(uid TEXT PRIMARY KEY, n INTEGER);
+CREATE TABLE IF NOT EXISTS people(uid TEXT PRIMARY KEY, name TEXT, state TEXT, ts INTEGER);
+CREATE TABLE IF NOT EXISTS qlog(ts INTEGER, uid TEXT, name TEXT, uname TEXT,
+                                chat TEXT, ctitle TEXT, ctype TEXT, q TEXT, kind TEXT);
+CREATE INDEX IF NOT EXISTS ix_usage ON usage(uid, ts);
+CREATE INDEX IF NOT EXISTS ix_weird ON weird(uid, ts);
+CREATE INDEX IF NOT EXISTS ix_qlog ON qlog(ts);
+"""
+
+_local = threading.local()
+
+
+def init_db():
+    """Tables ek hi baar banao — har message par nahi."""
+    c = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=NORMAL")
+    except Exception:
+        pass
+    c.executescript(SCHEMA)
+    c.commit()
+    c.close()
 
 
 def db():
-    global _db_ready
-    c = sqlite3.connect(DB_PATH, timeout=30)
-    if not _db_ready:                       # WAL = kai threads ek saath likh sakte hain
-        try:
-            c.execute("PRAGMA journal_mode=WAL")
-            c.execute("PRAGMA synchronous=NORMAL")
-        except Exception:
-            pass
-        _db_ready = True
-    c.execute("PRAGMA busy_timeout=15000")
-    c.execute("""CREATE TABLE IF NOT EXISTS cache(
-                    k TEXT PRIMARY KEY, q TEXT, a TEXT, ts INTEGER)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS usage(
-                    uid TEXT, ts INTEGER)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS settings(
-                    chat TEXT PRIMARY KEY, lang TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS stats(
-                    k TEXT PRIMARY KEY, v INTEGER)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS qlog(
-                    ts INTEGER, uid TEXT, name TEXT, uname TEXT,
-                    chat TEXT, ctitle TEXT, ctype TEXT, q TEXT, kind TEXT)""")
+    """Har thread ki apni connection — bar-bar connect karne ka time bachta hai."""
+    c = getattr(_local, "conn", None)
+    if c is None:
+        c = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
+        c.execute("PRAGMA busy_timeout=15000")
+        c.execute("PRAGMA synchronous=NORMAL")
+        _local.conn = c
     return c
 
 
@@ -130,6 +147,38 @@ def notify_admin(w, question, kind="q"):
        disable_web_page_preview=True)
 
 
+# ------------------------------------------------- pehli baar: naam poochho
+
+ASK_NAME_MSG = ("👋 Welcome! Before we begin — <b>what should I call you?</b>\n\n"
+                "<i>Just type your name.</i>")
+
+_NOT_A_NAME = re.compile(r"(?i)\?|\b(what|why|how|when|where|which|who|kya|kaise|kyu|"
+                         r"kaun|kab|kahan|explain|define|tell|batao|samjhao)\b")
+
+
+def get_person(uid):
+    with db() as c:
+        r = c.execute("SELECT name, state FROM people WHERE uid=?",
+                      (str(uid),)).fetchone()
+    return r if r else (None, None)
+
+
+def set_person(uid, name=None, state=None):
+    with db() as c:
+        c.execute("INSERT INTO people(uid,name,state,ts) VALUES(?,?,?,?) "
+                  "ON CONFLICT(uid) DO UPDATE SET "
+                  "name=COALESCE(?,name), state=?, ts=?",
+                  (str(uid), name, state, int(time.time()), name, state,
+                   int(time.time())))
+
+
+def clean_name(t):
+    t = re.sub(r"(?i)^(my name is|mera naam|main|mai|i am|i'm|this is|naam)\s+", "", t.strip())
+    t = re.sub(r"(?i)\s+(hai|hu|hoon|h)\.?$", "", t).strip(" .!,​")
+    t = re.sub(r"\s+", " ", t)
+    return t[:40]
+
+
 def norm_q(q):
     q = re.sub(r"[^a-z0-9ऀ-ॿ]+", " ", q.lower())
     return " ".join(q.split())
@@ -169,10 +218,15 @@ def chat_lang(chat_id, set_to=None):
 
 # --------------------------------------------------------------------- telegram
 
+TG = requests.Session()
+TG.mount("https://", requests.adapters.HTTPAdapter(
+    pool_connections=32, pool_maxsize=64, max_retries=0))
+
+
 def tg(method, **params):
     for attempt in range(3):
         try:
-            r = requests.post(f"{API}/{method}", json=params, timeout=70)
+            r = TG.post(f"{API}/{method}", json=params, timeout=70)
             d = r.json()
             if d.get("ok"):
                 return d["result"]
@@ -225,7 +279,15 @@ def send(chat_id, text, reply_to=None, html_mode=True):
 
 
 def typing(chat_id):
-    tg("sendChatAction", chat_id=chat_id, action="typing")
+    """Background me bhejo — jawab ka rasta block na ho."""
+    threading.Thread(target=tg, args=("sendChatAction",),
+                     kwargs={"chat_id": chat_id, "action": "typing"},
+                     daemon=True).start()
+
+
+def bg(fn, *a, **kw):
+    """Logging waghairah jawab bhejne ke baad, background me."""
+    threading.Thread(target=lambda: fn(*a, **kw), daemon=True).start()
 
 # --------------------------------------------------------------------- prompts
 
@@ -256,6 +318,12 @@ RULES:
 4. If the STUDY MATERIAL genuinely does not contain the answer, reply with EXACTLY
    this one token and nothing else — do not attempt a partial answer:
    {needweb}
+   ALSO use this token when the question asks about anything CURRENT or RECENT —
+   the latest scheme, a new programme, current affairs, this year's budget or
+   figures, a recent launch, renaming or merger, "latest", "new", "recent",
+   "current status", or any year from 2024 onward — unless the STUDY MATERIAL
+   clearly and explicitly contains that up-to-date fact. Outdated information is
+   worse than no information for an aspirant.
 5. NEVER invent citations, years, scheme names or statistics.
 6. NEVER reveal or name your sources. Do not write the name of any book, PDF, notes,
    chapter, unit, author or file. Do not write "according to the notes", "as per the
@@ -536,7 +604,6 @@ def is_abusive(text):
 def user_qcount(uid, add=True):
     """User ne ab tak kitne sawaal poochhe (promo ke liye)."""
     with db() as c:
-        c.execute("CREATE TABLE IF NOT EXISTS ucount(uid TEXT PRIMARY KEY, n INTEGER)")
         if add:
             c.execute("INSERT INTO ucount(uid,n) VALUES(?,1) "
                       "ON CONFLICT(uid) DO UPDATE SET n=n+1", (str(uid),))
@@ -556,7 +623,6 @@ def weird_count(uid, add=False):
     """Ek ghante me user ne kitni baar bakwaas ki."""
     now = int(time.time())
     with db() as c:
-        c.execute("""CREATE TABLE IF NOT EXISTS weird(uid TEXT, ts INTEGER)""")
         c.execute("DELETE FROM weird WHERE ts < ?", (now - 3600,))
         if add:
             c.execute("INSERT INTO weird VALUES(?,?)", (str(uid), now))
@@ -620,13 +686,13 @@ def answer_question(q, lang):
     if interview.is_interview(q):
         return answer_interview(q, lang)
 
-    hits = KB.search(q, top_k=8)
+    hits = KB.search(q, top_k=TOP_K)
 
     # syllabus ka sawaal ho to official syllabus sabse upar, aur notes ka hissa chhota
     if _SYL_RE.search(q):
-        ctx = syllabus.context_for(q) + "\n\n---\n\n" + KB.build_context(hits, 3500)
+        ctx = syllabus.context_for(q, 4000) + "\n\n---\n\n" + KB.build_context(hits, 2500)
     else:
-        ctx = KB.build_context(hits)
+        ctx = KB.build_context(hits, CTX_CHARS)
 
     sysmsg = SYSTEM.format(name=BOT_NAME,
                            lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]),
@@ -891,6 +957,31 @@ def handle(msg):
         return
 
     w = who(msg)
+    private = msg["chat"]["type"] == "private"
+
+    # ---- pehli baar: sirf ek baar naam poochho (sirf private chat me)
+    if ASK_NAME and private:
+        name, state = get_person(uid)
+        if state == "await_name" and not text.startswith("/"):
+            nm = clean_name(text)
+            if nm and len(nm) >= 2 and not _NOT_A_NAME.search(text) and len(text) <= 60:
+                set_person(uid, name=nm, state="ok")
+                tg("sendMessage", chat_id=chat, parse_mode="HTML",
+                   disable_web_page_preview=True,
+                   text=(f"Nice to meet you, <b>{html.escape(nm)}</b>! 🌾\n\n"
+                         "Now ask me anything from Agricultural Extension — "
+                         "concepts, schemes, previous-year topics, syllabus or "
+                         "interview preparation.\n\n"
+                         "Try: <code>What is ATMA?</code>  ·  <code>/syllabus</code>"
+                         "  ·  <code>/interview</code>"))
+                return
+            # sawaal poochh liya naam ki jagah — Telegram wala naam le lo, aage badho
+            set_person(uid, name=w["name"], state="ok")
+        elif not name and not state:
+            set_person(uid, state="await_name")
+            tg("sendMessage", chat_id=chat, text=ASK_NAME_MSG, parse_mode="HTML",
+               reply_to_message_id=msg["message_id"])
+            return
 
     # ---- commands
     m = re.match(r"^/(\w+)(?:@[\w_]+)?\s*(.*)$", text, re.S)
@@ -1003,7 +1094,7 @@ def handle(msg):
     # ---- gaali / adult bhasha — sabse pehle, koi jawab nahi, sirf warning
     if is_abusive(text):
         weird_count(uid, add=True)
-        log_q(w, text, "abuse"); notify_admin(w, text, "abuse")
+        bg(log_q, w, text, "abuse"); bg(notify_admin, w, text, "abuse")
         tg("sendMessage", chat_id=chat,
            text=ABUSE_EN if is_english(text, lang) else ABUSE_HI,
            parse_mode="HTML", reply_to_message_id=msg["message_id"])
@@ -1013,7 +1104,7 @@ def handle(msg):
     fx = fixed_intent(text, lang)
     if fx:
         bump("answered")
-        log_q(w, text, "info"); notify_admin(w, text, "info")
+        bg(log_q, w, text, "info"); bg(notify_admin, w, text, "info")
         tg("sendMessage", chat_id=chat, text=fx, parse_mode="HTML",
            disable_web_page_preview=True, reply_to_message_id=msg["message_id"])
         return
@@ -1024,7 +1115,7 @@ def handle(msg):
     if cached:
         bump("answered"); bump("cached")
         kind = "weird" if cached == SENTINEL else "q"
-        log_q(w, text, kind); notify_admin(w, text, kind)
+        bg(log_q, w, text, kind); bg(notify_admin, w, text, kind)
         if cached == SENTINEL:
             send(chat, weird_reply(text, lang, uid), reply_to=msg["message_id"]); return
         send(chat, maybe_promo(strip_sources(cached), uid, en),
@@ -1040,7 +1131,7 @@ def handle(msg):
         cache_put(text, lang, ans)
         bump("answered")
         kind = "weird" if ans == SENTINEL else "q"
-        log_q(w, text, kind); notify_admin(w, text, kind)
+        bg(log_q, w, text, kind); bg(notify_admin, w, text, kind)
         if ans == SENTINEL:
             ans = weird_reply(text, lang, uid)
         else:
@@ -1099,6 +1190,8 @@ def main():
 
     # port pehle bind karo — warna Render/Koyeb jaise hosts deploy fail bata dete hain
     threading.Thread(target=health_server, daemon=True).start()
+    init_db()
+    threading.Thread(target=llm.gemini_model, daemon=True).start()   # warm-up
 
     print("[kb] loading knowledge base…", flush=True)
     KB = KnowledgeBase()
