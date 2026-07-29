@@ -15,7 +15,7 @@ FIRST_TIMEOUT = int(os.environ.get("LLM_FIRST_TIMEOUT", "60"))   # pehli koshish
 CONNECT_TIMEOUT = 10
 RETRIES = int(os.environ.get("LLM_RETRIES", "2"))      # per variant
 BACKOFF = float(os.environ.get("LLM_BACKOFF", "1"))    # seconds
-MAX_OUT = int(os.environ.get("LLM_MAX_TOKENS", "1024"))
+MAX_OUT = int(os.environ.get("LLM_MAX_TOKENS", "700"))
 _lock = threading.Lock()
 
 # Keep-alive session — har call par TLS handshake nahi hota, kaafi tez
@@ -188,14 +188,31 @@ def diagnose():
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{model}:generateContent")
     key = GEMINI.next()
-    out = [f"model: {model}", f"keys: {len(GEMINI.keys)} gemini, "
-           f"{len(GROQ.keys)} groq, {len(OPENROUTER.keys)} openrouter"]
+    out = [f"model: {model}",
+           f"locked variants: {GOOD or 'none yet'}",
+           f"keys: {len(GEMINI.keys)} gemini, "
+           f"{len(GROQ.keys)} groq, {len(OPENROUTER.keys)} openrouter",
+           f"timeouts: first {FIRST_TIMEOUT}s / retry {TIMEOUT}s, "
+           f"retries {RETRIES}, max tokens {MAX_OUT}", ""]
     if not key:
         out.append("NO GEMINI KEY"); return "\n".join(out)
+
+    # asli speed — jaisa sawaal poochne par hota hai
+    t0 = time.time()
+    try:
+        _gemini("You are a study assistant. Be brief.",
+                "In one sentence, what is agricultural extension?", 0.2, False)
+        out.append(f"REAL ANSWER SPEED: {time.time()-t0:.1f}s")
+    except Exception as e:
+        out.append(f"REAL ANSWER FAILED after {time.time()-t0:.1f}s: {str(e)[:150]}")
+    out.append("")
+
     for label, body in _variants("You are a test.", "Reply with the word OK.",
                                  0.1, True):
         try:
+            t1 = time.time()
             r = SESSION.post(url, params={"key": key}, json=body, timeout=40)
+            label = f"{label} ({time.time()-t1:.1f}s)"
             if r.status_code == 200:
                 d = r.json()
                 cand = (d.get("candidates") or [{}])[0]

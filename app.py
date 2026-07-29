@@ -115,13 +115,18 @@ def who(msg):
     }
 
 
+_trim = [0]
+
+
 def log_q(w, question, kind="q"):
     with db() as c:
         c.execute("INSERT INTO qlog VALUES(?,?,?,?,?,?,?,?,?)",
                   (int(time.time()), w["uid"], w["name"], w["uname"],
                    w["chat"], w["ctitle"], w["ctype"], question[:500], kind))
-        c.execute("DELETE FROM qlog WHERE rowid NOT IN "
-                  "(SELECT rowid FROM qlog ORDER BY ts DESC LIMIT 3000)")
+        _trim[0] += 1
+        if _trim[0] % 200 == 0:          # har message par nahi — kabhi-kabhi
+            c.execute("DELETE FROM qlog WHERE rowid NOT IN "
+                      "(SELECT rowid FROM qlog ORDER BY ts DESC LIMIT 3000)")
 
 
 def watch_on():
@@ -313,8 +318,10 @@ RULES:
 1. Answer the question directly first, then give supporting detail.
 2. Use the STUDY MATERIAL as your primary source. Quote exact facts, years, names,
    numbers and definitions from it — aspirants need exam-accurate detail.
-3. Keep it exam-focused and compact: short paragraphs or bullets, bold the key terms.
-   Aim for under 200 words unless the question needs more.
+3. BE BRIEF. Answer in under 120 words. Lead with the direct answer in one line,
+   then 3-5 short bullets of exam-critical detail (years, full forms, names, figures).
+   Bold the key terms. No introductions, no summaries, no "in conclusion".
+   Only go longer if the student explicitly asks to "explain in detail".
 4. If the STUDY MATERIAL genuinely does not contain the answer, reply with EXACTLY
    this one token and nothing else — do not attempt a partial answer:
    {needweb}
@@ -441,8 +448,8 @@ RULES:
    websites, and peer-reviewed extension literature.
 2. Be exam-accurate: give exact years, full forms, names of committees, scheme names,
    ministries and figures. If a scheme has been renamed or merged, say the current status.
-3. Keep it compact and exam-focused — bullets or short paragraphs, bold the key terms,
-   under 220 words unless more is genuinely needed.
+3. BE BRIEF — under 120 words. Direct answer first, then a few tight bullets with
+   exact years, full forms, names and figures. Bold key terms. No preamble, no summary.
 4. NEVER name your sources inside the answer. No "according to PIB", no citations,
    no URLs, no "as per the website". Just state the facts plainly.
 5. Do not say the notes did not have it. Do not apologise. Start with the answer.
@@ -717,8 +724,10 @@ def answer_question(q, lang):
     if ALLOW_OUTSIDE and not _SYL_RE.search(q) and (_CURRENT_RE.search(q) or weak):
         websys = WEB_SYSTEM.format(name=BOT_NAME, owner=OWNER_NAME, sentinel=SENTINEL,
                                    lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
-        user = (f"YOUR OWN NOTES (use these first if they answer it and are still "
-                f"accurate; otherwise search):\n{ctx}\n\nQUESTION: {q}") if ctx else q
+        user = (f"YOUR OWN NOTES — READ THESE FIRST. If they answer the question and "
+                f"are still accurate, answer from them and do NOT search. Search only "
+                f"if they are missing this fact or clearly out of date.\n{ctx}\n\n"
+                f"QUESTION: {q}") if ctx else q
         print(f"[web] direct (current/weak): {q[:60]}", flush=True)
         bump("web")
         try:
@@ -1193,6 +1202,26 @@ def handle(msg):
 
 # --------------------------------------------------------------------- health server
 
+def keep_awake():
+    """
+    Render ka free instance 15 min traffic na aaye to so jaata hai, aur phir
+    agla message ~60 second lagta hai. Bot khud ko ping karta rahega.
+    """
+    url = (os.environ.get("SELF_URL")
+           or os.environ.get("RENDER_EXTERNAL_URL")
+           or "").strip().rstrip("/")
+    if not url:
+        print("[wake] SELF_URL not set — relying on external ping", flush=True)
+        return
+    print(f"[wake] self-ping every 8 min -> {url}", flush=True)
+    while True:
+        time.sleep(480)
+        try:
+            TG.get(url, timeout=20)
+        except Exception as e:
+            print("[wake]", e, flush=True)
+
+
 def health_server():
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -1229,6 +1258,7 @@ def main():
     # port pehle bind karo — warna Render/Koyeb jaise hosts deploy fail bata dete hain
     threading.Thread(target=health_server, daemon=True).start()
     init_db()
+    threading.Thread(target=keep_awake, daemon=True).start()
     threading.Thread(target=llm.gemini_model, daemon=True).start()   # warm-up
 
     print("[kb] loading knowledge base…", flush=True)
