@@ -14,6 +14,7 @@ import os, re, io, json, time, html, sqlite3, hashlib, threading, traceback
 import requests
 
 import llm
+import syllabus
 from kb_search import KnowledgeBase
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -234,7 +235,9 @@ RULES:
    numbers and definitions from it — aspirants need exam-accurate detail.
 3. Keep it exam-focused and compact: short paragraphs or bullets, bold the key terms.
    Aim for under 200 words unless the question needs more.
-4. If the STUDY MATERIAL does not contain the answer:{outside}
+4. If the STUDY MATERIAL genuinely does not contain the answer, reply with EXACTLY
+   this one token and nothing else — do not attempt a partial answer:
+   {needweb}
 5. NEVER invent citations, years, scheme names or statistics.
 6. NEVER reveal or name your sources. Do not write the name of any book, PDF, notes,
    chapter, unit, author or file. Do not write "according to the notes", "as per the
@@ -323,14 +326,32 @@ ABUSE_EN = ("⚠️ This language is not allowed here.\n\n"
 
 # ================================================================================
 
-OUTSIDE_YES = """
-   answer from your own knowledge, carefully and confidently. NEVER announce this —
-   do not write "not found in notes", "notes me nahi mila", "the material does not
-   mention", "based on general knowledge" or any similar disclaimer. Just answer."""
+NEEDWEB = "NEED_WEB_LOOKUP"
 
-OUTSIDE_NO = """
-   say politely that this topic is not covered yet, and suggest a related topic
-   that IS covered. Do not answer from outside knowledge."""
+# Stage 2 — jab notes me jawab na mile: Google Search grounding ke saath
+WEB_SYSTEM = """You are {name}, a study assistant for Indian agriculture competitive exams
+(ICAR NET / ASRB NET / ARS / SRF / JRF / SMS / STO, Agricultural Extension & allied subjects).
+
+{lang_rule}
+
+The question was not covered in the student's own notes, so answer it now using
+Google Search and your own knowledge.
+
+RULES:
+1. Prefer authoritative Indian sources: ICAR (icar.org.in), ASRB, PIB (pib.gov.in),
+   Ministry of Agriculture & Farmers Welfare (agricoop.gov.in), MANAGE (manage.gov.in),
+   NAARM, eGyanKosh / IGNOU, NIRD&PR, TNAU Agritech Portal, KVK portal, ICAR institute
+   websites, and peer-reviewed extension literature.
+2. Be exam-accurate: give exact years, full forms, names of committees, scheme names,
+   ministries and figures. If a scheme has been renamed or merged, say the current status.
+3. Keep it compact and exam-focused — bullets or short paragraphs, bold the key terms,
+   under 220 words unless more is genuinely needed.
+4. NEVER name your sources inside the answer. No "according to PIB", no citations,
+   no URLs, no "as per the website". Just state the facts plainly.
+5. Do not say the notes did not have it. Do not apologise. Start with the answer.
+6. If you are genuinely unsure of a fact, say so in one short line rather than guessing.
+7. NEVER say you are Gemini, Google, an AI model, or that you searched the internet.
+   Your knowledge comes from {owner}."""
 
 USER_TMPL = """STUDY MATERIAL:
 =====
@@ -521,21 +542,42 @@ def weird_reply(q, lang, uid):
     return WEIRD_EN if en else WEIRD_HI
 
 
+_SYL_RE = re.compile(r"(?i)\b(syllabus|syllabi|silabus|sylabus|paathyakram|"
+                     r"exam\s*pattern|course\s*content|unit\s*[-–]?\s*\d{1,2})\b")
+
+
 def answer_question(q, lang):
-    """Normal jawab, ya SENTINEL agar sawaal bakwaas hai."""
+    """Stage 1: notes se. Stage 2: web/Google se. Ya SENTINEL agar sawaal bakwaas hai."""
     hits = KB.search(q, top_k=8)
     ctx = KB.build_context(hits)
+
+    # syllabus ka sawaal ho to official syllabus sabse upar chipka do
+    if _SYL_RE.search(q):
+        ctx = syllabus.context_for(q) + "\n\n---\n\n" + ctx
+
     sysmsg = SYSTEM.format(name=BOT_NAME,
                            lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]),
-                           outside=OUTSIDE_YES if ALLOW_OUTSIDE else OUTSIDE_NO,
+                           needweb=NEEDWEB,
                            sentinel=SENTINEL, owner=OWNER_NAME, group=OWNER_GROUP,
                            link=OWNER_LINK, phone=OWNER_PHONE, glink=GROUP_LINK)
     if not ctx:
         ctx = "(no relevant material found)"
     out = llm.complete(sysmsg, USER_TMPL.format(context=ctx, question=q))
+    flat = out.upper().replace(" ", "_")
 
-    if SENTINEL in out.upper().replace(" ", "_"):
+    if SENTINEL in flat:
         return SENTINEL
+
+    # ---- Stage 2: notes me nahi mila -> Google Search + apni knowledge
+    if NEEDWEB in flat or not strip_sources(out):
+        if not ALLOW_OUTSIDE:
+            return ("This topic is not covered in our material yet. "
+                    "Try asking about a related Extension topic 🙏")
+        websys = WEB_SYSTEM.format(name=BOT_NAME, owner=OWNER_NAME,
+                                   lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
+        bump("web")
+        print(f"[web] falling back to search for: {q[:70]}", flush=True)
+        out = llm.complete(websys, q, temperature=0.3, use_search=True)
 
     out = strip_sources(out)
     if not out:
@@ -583,6 +625,7 @@ in the same language.
 
 <b>Commands</b>
 /ask &lt;question&gt; — get an answer
+/syllabus [unit] — official ASRB NET/ARS syllabus
 /quiz &lt;topic&gt; — 5 MCQ practice questions
 /lang auto|en|hi|hinglish — set answer language
 /contact — reach Tripathi Sir
@@ -606,6 +649,22 @@ def cmd_sources(chat, msg, uid):
         txt = (f"📚 I have the full content of <b>{len(srcs)}</b> books and notes "
                f"(<b>{KB.meta.get('chunks', 0)}</b> passages).\nJust ask your question!")
     tg("sendMessage", chat_id=chat, text=txt[:4000], parse_mode="HTML",
+       reply_to_message_id=msg["message_id"])
+
+
+def cmd_syllabus(chat, msg, arg):
+    m = re.search(r"\d{1,2}", arg or "")
+    if m:
+        u = syllabus.get_unit(int(m.group()))
+        if u:
+            txt = (f"📘 <b>{syllabus.HEADER}</b>\n\n"
+                   f"<b>Unit {u[0]}: {html.escape(u[1])}</b>\n\n{html.escape(u[2])}")
+            for i in range(0, len(txt), 3800):
+                tg("sendMessage", chat_id=chat, text=txt[i:i + 3800], parse_mode="HTML")
+            return
+    txt = (f"📘 <b>{syllabus.HEADER}</b>\n\n{syllabus.unit_list()}\n\n"
+           "Send <code>/syllabus 5</code> for the full text of any unit.")
+    tg("sendMessage", chat_id=chat, text=txt, parse_mode="HTML",
        reply_to_message_id=msg["message_id"])
 
 
@@ -711,6 +770,7 @@ def cmd_stats(chat, msg, uid):
     txt = (f"📊 <b>{BOT_NAME}</b>\n"
            f"Questions answered: <b>{get_stat('answered')}</b>\n"
            f"From cache (free): <b>{get_stat('cached')}</b>\n"
+           f"Answered from the web: <b>{get_stat('web')}</b>\n"
            f"Knowledge: <b>{KB.meta.get('chunks',0)}</b> passages from "
            f"<b>{len(KB.meta.get('sources',[]))}</b> sources")
     if is_admin(uid):
@@ -778,6 +838,8 @@ def handle(msg):
                parse_mode="HTML", disable_web_page_preview=True); return
         if cmd == "sources":
             cmd_sources(chat, msg, uid); return
+        if cmd in ("syllabus", "syl"):
+            cmd_syllabus(chat, msg, arg); return
         if cmd in ("contact", "admin", "owner"):
             tg("sendMessage", chat_id=chat, text=CONTACT_MSG, parse_mode="HTML",
                disable_web_page_preview=True, reply_to_message_id=msg["message_id"])
@@ -928,6 +990,7 @@ def main():
 
     tg("setMyCommands", commands=[
         {"command": "ask", "description": "Ask a question"},
+        {"command": "syllabus", "description": "Official ASRB NET / ARS syllabus"},
         {"command": "quiz", "description": "5 MCQ practice questions"},
         {"command": "lang", "description": "auto | en | hi | hinglish"},
         {"command": "contact", "description": "Reach Tripathi Sir"},

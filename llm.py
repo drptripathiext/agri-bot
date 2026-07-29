@@ -75,29 +75,30 @@ def gemini_model():
     return _gemini_model
 
 
-def _gemini(system, user, temperature):
+def _gemini(system, user, temperature, use_search=False):
     model = gemini_model()
     last = None
     for _ in range(max(1, len(GEMINI.keys))):
         key = GEMINI.next()
         if not key:
             break
+        body = {
+            "system_instruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {"temperature": temperature,
+                                 "maxOutputTokens": 1400},
+            "safetySettings": [
+                {"category": c, "threshold": "BLOCK_ONLY_HIGH"} for c in
+                ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
+                 "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]
+            ],
+        }
+        if use_search:
+            body["tools"] = [{"google_search": {}}]
         try:
             r = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                params={"key": key},
-                json={
-                    "system_instruction": {"parts": [{"text": system}]},
-                    "contents": [{"role": "user", "parts": [{"text": user}]}],
-                    "generationConfig": {"temperature": temperature,
-                                         "maxOutputTokens": 1400},
-                    "safetySettings": [
-                        {"category": c, "threshold": "BLOCK_ONLY_HIGH"} for c in
-                        ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
-                         "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]
-                    ],
-                },
-                timeout=TIMEOUT,
+                params={"key": key}, json=body, timeout=TIMEOUT,
             )
             if r.status_code == 200:
                 d = r.json()
@@ -109,6 +110,10 @@ def _gemini(system, user, temperature):
                 last = "empty response"
             else:
                 last = f"{r.status_code} {r.text[:180]}"
+                # search tool support na ho / quota khatam -> bina search dubara
+                if use_search and r.status_code in (400, 429):
+                    use_search = False
+                    continue
                 if r.status_code in (429, 403):      # quota -> try next key
                     continue
         except Exception as e:
@@ -170,8 +175,12 @@ def have_any_key():
     return bool(GEMINI.keys or GROQ.keys or OPENROUTER.keys)
 
 
-def complete(system, user, temperature=0.25):
-    """Try each configured provider in order; return the first successful answer."""
+def complete(system, user, temperature=0.25, use_search=False):
+    """Try each configured provider in order; return the first successful answer.
+
+    use_search=True -> Gemini ko Google Search grounding de do (live web results).
+    Groq/OpenRouter me search nahi hota, wo apni knowledge se jawab denge.
+    """
     errors = []
     for name, fn, rot in (("gemini", _gemini, GEMINI),
                           ("groq", _groq, GROQ),
@@ -179,6 +188,8 @@ def complete(system, user, temperature=0.25):
         if not rot.keys:
             continue
         try:
+            if name == "gemini":
+                return fn(system, user, temperature, use_search)
             return fn(system, user, temperature)
         except Exception as e:
             errors.append(f"{name}: {e}")
