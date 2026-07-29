@@ -10,9 +10,11 @@ Env vars (comma-separate multiple keys for more free quota):
 import os, json, time, threading
 import requests
 
-TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "180"))
-RETRIES = int(os.environ.get("LLM_RETRIES", "3"))      # per variant
-BACKOFF = float(os.environ.get("LLM_BACKOFF", "2"))    # seconds
+TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "120"))      # retry ka read timeout
+FIRST_TIMEOUT = int(os.environ.get("LLM_FIRST_TIMEOUT", "60"))   # pehli koshish
+CONNECT_TIMEOUT = 10
+RETRIES = int(os.environ.get("LLM_RETRIES", "2"))      # per variant
+BACKOFF = float(os.environ.get("LLM_BACKOFF", "1"))    # seconds
 MAX_OUT = int(os.environ.get("LLM_MAX_TOKENS", "1024"))
 _lock = threading.Lock()
 
@@ -90,6 +92,11 @@ SAFETY = [{"category": c, "threshold": "BLOCK_ONLY_HIGH"} for c in
 LAST_ERROR = {"when": 0, "detail": ""}      # /diag ke liye
 
 
+# Jo variant pichli baar chala tha, use hi sabse pehle try karo.
+# Isse har sawaal par "kaunsa format chalega" dhoondhne ka time bachta hai.
+GOOD = {}                                  # {"plain"/"search": "variant-name"}
+
+
 def _variants(system, user, temperature, use_search):
     """Sabse feature-rich request se sabse simple tak — jo chal jaye wahi sahi."""
     def base(gen, extra=None):
@@ -109,9 +116,14 @@ def _variants(system, user, temperature, use_search):
         out.append(("search", base(full, {"tools": [{"google_search": {}}]})))
     out.append(("nothink", base(nothink)))
     out.append(("plain", base(full)))
-    # sabse compatible: na system_instruction, na safety, na config
+    # sabse compatible: na systemInstruction, na safety, na config
     out.append(("bare", {"contents": [{"role": "user",
                                        "parts": [{"text": system + "\n\n" + user}]}]}))
+
+    # pichli baar jo chala tha wo sabse aage le aao
+    known = GOOD.get("search" if use_search else "plain")
+    if known:
+        out.sort(key=lambda kv: kv[0] != known)
     return out
 
 
@@ -121,25 +133,32 @@ def _gemini(system, user, temperature, use_search=False):
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{model}:generateContent")
     last = "unknown error"
-    keys = GEMINI.keys or []
+    slot = "search" if use_search else "plain"
+    t0 = time.time()
 
     for label, body in _variants(system, user, temperature, use_search):
-        # har variant ko RETRIES baar: fail -> 2s ruko -> dubara -> 4s -> dubara
+        # har variant ko RETRIES baar: fail -> 1s ruko -> doosri koshish
         for attempt in range(max(1, RETRIES)):
             key = GEMINI.next()
             if not key:
                 break
             fatal = False
+            read_to = FIRST_TIMEOUT if attempt == 0 else TIMEOUT
             try:
-                r = SESSION.post(url, params={"key": key}, json=body, timeout=TIMEOUT)
+                r = SESSION.post(url, params={"key": key}, json=body,
+                                 timeout=(CONNECT_TIMEOUT, read_to))
                 if r.status_code == 200:
                     d = r.json()
                     cand = (d.get("candidates") or [{}])[0]
                     parts = (cand.get("content") or {}).get("parts") or []
                     txt = "".join(p.get("text", "") for p in parts).strip()
                     if txt:
-                        if label != "search+nothink":
-                            print(f"[llm] ok via variant '{label}'", flush=True)
+                        if GOOD.get(slot) != label:
+                            GOOD[slot] = label      # yaad rakho, agli baar seedhe yahi
+                            print(f"[llm] variant '{label}' locked in for {slot}",
+                                  flush=True)
+                        print(f"[llm] {slot} answer in {time.time()-t0:.1f}s",
+                              flush=True)
                         return txt
                     last = (f"[{label}] empty, finishReason="
                             f"{cand.get('finishReason','?')}")
@@ -153,9 +172,11 @@ def _gemini(system, user, temperature, use_search=False):
                 last = f"[{label}] {type(e).__name__}: {e}"
             print(f"[llm] {last}", flush=True)
             if fatal:
+                if GOOD.get(slot) == label:
+                    GOOD.pop(slot, None)            # ye ab nahi chalta, bhool jao
                 break
             if attempt < RETRIES - 1:
-                time.sleep(BACKOFF * (attempt + 1))   # 2s, phir 4s
+                time.sleep(BACKOFF)
     LAST_ERROR["when"] = int(time.time())
     LAST_ERROR["detail"] = last
     raise RuntimeError(f"gemini failed: {last}")

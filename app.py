@@ -448,7 +448,14 @@ RULES:
 5. Do not say the notes did not have it. Do not apologise. Start with the answer.
 6. If you are genuinely unsure of a fact, say so in one short line rather than guessing.
 7. NEVER say you are Gemini, Google, an AI model, or that you searched the internet.
-   Your knowledge comes from {owner}."""
+   Your knowledge comes from {owner}.
+8. OFF-TOPIC FILTER — overrides everything above. If the message is not a genuine
+   study/exam question (gibberish, jokes, flirting, personal questions, abuse,
+   politics, cricket, movies, relationships, money advice, unrelated tasks), reply
+   with EXACTLY this one token and nothing else:
+   {sentinel}
+   Exam-related questions — syllabus, pattern, PYQ, cut-off, eligibility, schemes,
+   current affairs in agriculture — are always GENUINE."""
 
 USER_TMPL = """STUDY MATERIAL:
 =====
@@ -643,6 +650,17 @@ def weird_reply(q, lang, uid):
 _SYL_RE = re.compile(r"(?i)\b(syllabus|syllabi|silabus|sylabus|paathyakram|"
                      r"exam\s*pattern|course\s*content|unit\s*[-–]?\s*\d{1,2})\b")
 
+# "Latest / current" wale sawaal — inme notes purane ho sakte hain.
+# Inke liye ek hi call me notes + Google dono bhej do (do call ka time bachta hai).
+_CURRENT_RE = re.compile(r"""(?ix)
+    \b(latest|newest|recent|recently|current|currently|today|
+       aaj|abhi|naya|nayi|naye|taza|filhal|
+       updated?|update|news|announced?|announcement|launched?|
+       this\s*year|is\s*saal|budget|allocation)\b
+  | \b20(2[4-9]|[3-9]\d)\b
+  | \b(kaun|who)\s+(hai|is|hain|are)\b[^?.\n]{0,30}\b(dg|director|minister|chairman|secretary)\b
+""")
+
 
 def local_fallback(q):
     """AI fail ho jaye to bhi syllabus wale sawaal ka jawab file se de do."""
@@ -694,6 +712,24 @@ def answer_question(q, lang):
     else:
         ctx = KB.build_context(hits, CTX_CHARS)
 
+    # ---- "latest/current" sawaal: do call ki jagah EK call — notes + Google saath me
+    weak = (not hits) or hits[0]["score"] < 15
+    if ALLOW_OUTSIDE and not _SYL_RE.search(q) and (_CURRENT_RE.search(q) or weak):
+        websys = WEB_SYSTEM.format(name=BOT_NAME, owner=OWNER_NAME, sentinel=SENTINEL,
+                                   lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
+        user = (f"YOUR OWN NOTES (use these first if they answer it and are still "
+                f"accurate; otherwise search):\n{ctx}\n\nQUESTION: {q}") if ctx else q
+        print(f"[web] direct (current/weak): {q[:60]}", flush=True)
+        bump("web")
+        try:
+            w1 = llm.complete(websys, user, temperature=0.3, use_search=True)
+        except Exception as e:
+            print(f"[web] grounded failed ({e}) — plain", flush=True)
+            w1 = llm.complete(websys, user, temperature=0.3)
+        if SENTINEL in w1.upper().replace(" ", "_"):
+            return SENTINEL
+        return strip_sources(w1) or SENTINEL
+
     sysmsg = SYSTEM.format(name=BOT_NAME,
                            lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]),
                            needweb=NEEDWEB,
@@ -712,7 +748,7 @@ def answer_question(q, lang):
         if not ALLOW_OUTSIDE:
             return ("This topic is not covered in our material yet. "
                     "Try asking about a related Extension topic 🙏")
-        websys = WEB_SYSTEM.format(name=BOT_NAME, owner=OWNER_NAME,
+        websys = WEB_SYSTEM.format(name=BOT_NAME, owner=OWNER_NAME, sentinel=SENTINEL,
                                    lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
         print(f"[web] falling back to search for: {q[:70]}", flush=True)
         try:
@@ -1126,8 +1162,10 @@ def handle(msg):
              .format(RATE_PER_HOUR), reply_to=msg["message_id"]); return
 
     typing(chat)
+    t0 = time.time()
     try:
         ans = answer_question(text, lang)
+        print(f"[time] {time.time()-t0:.1f}s — {text[:50]}", flush=True)
         cache_put(text, lang, ans)
         bump("answered")
         kind = "weird" if ans == SENTINEL else "q"
