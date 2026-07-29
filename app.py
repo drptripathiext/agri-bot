@@ -253,6 +253,10 @@ RULES:
    abuse, insults or adult content; politics, cricket, movies, relationships, money
    advice; asking you to write code, essays or do unrelated tasks; or any topic with
    no connection to agriculture, extension, rural development, or competitive exams.
+   ALWAYS GENUINE (never use the token for these): questions about the exam itself —
+   syllabus, exam pattern, marking scheme, PYQ / previous year questions, cut-off,
+   eligibility, how to prepare, book recommendations, subject codes, ASRB / ICAR NET /
+   ARS / SRF / JRF / SMS / STO exam details.
    BE GENEROUS to real students: badly worded, short, spelling-mistake, one-word or
    Hinglish questions about ANY academic or agriculture/exam topic are GENUINE —
    answer those normally. Greetings like "hi", "thanks", "good morning" are also fine
@@ -575,9 +579,14 @@ def answer_question(q, lang):
                     "Try asking about a related Extension topic 🙏")
         websys = WEB_SYSTEM.format(name=BOT_NAME, owner=OWNER_NAME,
                                    lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
-        bump("web")
         print(f"[web] falling back to search for: {q[:70]}", flush=True)
-        out = llm.complete(websys, q, temperature=0.3, use_search=True)
+        try:
+            out = llm.complete(websys, q, temperature=0.3, use_search=True)
+            bump("web")
+        except Exception as e:
+            print(f"[web] grounded call failed ({e}) — trying plain", flush=True)
+            out = llm.complete(websys, q, temperature=0.3, use_search=False)
+            bump("web")
 
     out = strip_sources(out)
     if not out:
@@ -936,8 +945,14 @@ def handle(msg):
         send(chat, ans, reply_to=msg["message_id"])
     except Exception as e:
         traceback.print_exc()
-        send(chat, "😕 Could not answer right now (server busy). "
-                   "Please try again in a minute.", reply_to=msg["message_id"])
+        send(chat, "😕 Could not answer right now. Please try again in a minute.",
+             reply_to=msg["message_id"])
+        # asli error admin ke DM me — debugging ke liye
+        if ADMIN_ID:
+            tg("sendMessage", chat_id=ADMIN_ID, parse_mode="HTML",
+               text=("⚠️ <b>Answer failed</b>\n"
+                     f"<b>Q:</b> {html.escape(text[:200])}\n"
+                     f"<b>Error:</b> <code>{html.escape(str(e)[:600])}</code>"))
 
 # --------------------------------------------------------------------- health server
 

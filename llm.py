@@ -76,30 +76,41 @@ def gemini_model():
 
 
 def _gemini(system, user, temperature, use_search=False):
+    """
+    Gemini call with three self-healing retries:
+      • 'thinking' models poora output-budget soch me kha jaate hain -> thinkingBudget 0
+      • google_search tool na chale / quota khatam -> bina search dubara
+      • ek key ka quota khatam -> agli key
+    """
     model = gemini_model()
-    last = None
-    for _ in range(max(1, len(GEMINI.keys))):
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{model}:generateContent")
+    last = "unknown error"
+    no_think = True                       # pehle thinking off ke saath try karo
+    search = use_search
+    attempts = max(1, len(GEMINI.keys)) + 2
+
+    for _ in range(attempts):
         key = GEMINI.next()
         if not key:
             break
+        gen = {"temperature": temperature, "maxOutputTokens": 2048}
+        if no_think:
+            gen["thinkingConfig"] = {"thinkingBudget": 0}
         body = {
             "system_instruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": user}]}],
-            "generationConfig": {"temperature": temperature,
-                                 "maxOutputTokens": 1400},
+            "generationConfig": gen,
             "safetySettings": [
                 {"category": c, "threshold": "BLOCK_ONLY_HIGH"} for c in
                 ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
                  "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]
             ],
         }
-        if use_search:
+        if search:
             body["tools"] = [{"google_search": {}}]
         try:
-            r = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                params={"key": key}, json=body, timeout=TIMEOUT,
-            )
+            r = requests.post(url, params={"key": key}, json=body, timeout=TIMEOUT)
             if r.status_code == 200:
                 d = r.json()
                 cand = (d.get("candidates") or [{}])[0]
@@ -107,17 +118,35 @@ def _gemini(system, user, temperature, use_search=False):
                 txt = "".join(p.get("text", "") for p in parts).strip()
                 if txt:
                     return txt
-                last = "empty response"
-            else:
-                last = f"{r.status_code} {r.text[:180]}"
-                # search tool support na ho / quota khatam -> bina search dubara
-                if use_search and r.status_code in (400, 429):
-                    use_search = False
+                fr = cand.get("finishReason", "?")
+                last = f"empty response (finishReason={fr})"
+                print(f"[llm] gemini empty, finishReason={fr}", flush=True)
+                if fr in ("MAX_TOKENS", "OTHER") and not no_think:
+                    no_think = True                 # thinking budget khatam kar do
                     continue
-                if r.status_code in (429, 403):      # quota -> try next key
+                if search:                          # search ke bina dubara
+                    search = False
                     continue
+                continue
+
+            last = f"{r.status_code} {r.text[:200]}"
+            low = r.text.lower()
+            # thinkingConfig ye model support nahi karta
+            if no_think and r.status_code == 400 and "think" in low:
+                no_think = False
+                continue
+            # google_search tool support nahi / grounding quota khatam
+            if search and r.status_code in (400, 403, 429):
+                print("[llm] search grounding unavailable, retrying without it",
+                      flush=True)
+                search = False
+                continue
+            if r.status_code in (429, 403, 500, 503):
+                continue
         except Exception as e:
             last = str(e)
+            if search:
+                search = False
     raise RuntimeError(f"gemini failed: {last}")
 
 
