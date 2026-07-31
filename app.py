@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS stats(k TEXT PRIMARY KEY, v INTEGER);
 CREATE TABLE IF NOT EXISTS weird(uid TEXT, ts INTEGER);
 CREATE TABLE IF NOT EXISTS ucount(uid TEXT PRIMARY KEY, n INTEGER);
 CREATE TABLE IF NOT EXISTS people(uid TEXT PRIMARY KEY, name TEXT, state TEXT, ts INTEGER);
+CREATE TABLE IF NOT EXISTS convo(uid TEXT, ts INTEGER, q TEXT, a TEXT);
+CREATE INDEX IF NOT EXISTS ix_convo ON convo(uid, ts);
 CREATE TABLE IF NOT EXISTS qlog(ts INTEGER, uid TEXT, name TEXT, uname TEXT,
                                 chat TEXT, ctitle TEXT, ctype TEXT, q TEXT, kind TEXT);
 CREATE INDEX IF NOT EXISTS ix_usage ON usage(uid, ts);
@@ -184,6 +186,69 @@ def clean_name(t):
     t = re.sub(r"(?i)\s+(hai|hu|hoon|h)\.?$", "", t).strip(" .!,​")
     t = re.sub(r"\s+", " ", t)
     return t[:40]
+
+
+# ------------------------------------------------- baat ka silsila (follow-up)
+
+CONVO_TTL = int(os.environ.get("CONVO_TTL", "2700"))     # 45 minute
+CONVO_TURNS = int(os.environ.get("CONVO_TURNS", "3"))    # kitne purane sawaal yaad
+
+
+def save_turn(uid, q, a):
+    now = int(time.time())
+    with db() as c:
+        c.execute("INSERT INTO convo VALUES(?,?,?,?)",
+                  (str(uid), now, q[:400], a[:1500]))
+        c.execute("DELETE FROM convo WHERE ts < ?", (now - CONVO_TTL,))
+        c.execute("DELETE FROM convo WHERE uid=? AND rowid NOT IN "
+                  "(SELECT rowid FROM convo WHERE uid=? ORDER BY ts DESC LIMIT ?)",
+                  (str(uid), str(uid), CONVO_TURNS))
+
+
+def history(uid):
+    cut = int(time.time()) - CONVO_TTL
+    with db() as c:
+        rows = c.execute("SELECT q, a FROM convo WHERE uid=? AND ts>=? "
+                         "ORDER BY ts DESC LIMIT ?",
+                         (str(uid), cut, CONVO_TURNS)).fetchall()
+    return list(reversed(rows))
+
+
+def clear_convo(uid):
+    with db() as c:
+        c.execute("DELETE FROM convo WHERE uid=?", (str(uid),))
+
+
+# "iska matlab?", "aur detail do", "why?", "example do" — ye pichle sawaal se jude hain
+_FOLLOWUP = re.compile(r"""(?ix)
+    ^\s*(
+        (aur|और|and)\b | (iska|isaka|uska|usaka|iske|uske|isme|usme|isko|usko|inka|unka)\b
+      | (ye|yeh|wo|woh|this|that|it|they|these|those)\b
+      | (why|how|when|where|which|who)\s*[?.]?\s*$
+      | (matlab|meaning|arth|samjhao|samjha|explain|elaborate|detail|details|
+         example|examples|udaharan|difference|compare|briefly|shortly|short\s*me)\b
+      | (more|zyada|thoda|aage|phir|next|continue|go\s*on|ok|okay|haan|han|hmm)\b
+      | (kyu|kyun|kyon|kaise|kab|kahan|kaun)\s*[?.]?\s*$
+      | (source|proof|reference|kaha\s*likha)\b
+      | (uske|iske)\s*(alawa|baad|pehle|bare)
+      | (repeat|dobara|dubara|firse|fir\s*se)\b
+    )
+  | ^\s*[a-zऀ-ॿ ]{1,18}\s*\?\s*$
+""")
+
+
+def is_followup(text, hist):
+    """0 = naya sawaal · 1 = shayad juda hua · 2 = pakka follow-up"""
+    if not hist:
+        return 0
+    t = text.strip()
+    if len(t) <= 3:
+        return 0
+    if _FOLLOWUP.search(t) and not re.search(r"\b[A-Z]{2,}\b", t):
+        return 2                       # "iska matlab?", "aur detail do", "why?"
+    if len(t) < 60:
+        return 1                       # chhota sawaal — context saath rakho, par
+    return 0                           # dhoondhne me use mat karo
 
 
 def norm_q(q):
@@ -359,8 +424,9 @@ RULES:
 9. ABOUT YOURSELF. If asked where your knowledge comes from, say it comes from
    {owner}'s knowledge — whatever He taught you. If asked who {owner} is or who made
    you, say He is the Admin of the {group} group who designed and built you with
-   2 months of hard work for the aspirants, and invite them to join {glink}.
-   If asked how to contact Him, give {link} and {phone}.
+   2 months of hard work for the aspirants, and invite them to join {glink} and to
+   follow Him on LinkedIn at {linkedin}.
+   If asked how to contact Him, give {link}, {phone} and {linkedin}.
    Never say you are Gemini, Google, an LLM, or that you read PDFs or notes.
 """
 
@@ -372,6 +438,7 @@ OWNER_NAME = "Dr. P. Tripathi"
 OWNER_GROUP = "@agriextprep"
 GROUP_LINK = "https://t.me/AgriExtPrep"
 OWNER_LINK = "https://t.me/asktripathii"
+OWNER_LINKEDIN = "https://www.linkedin.com/in/pramod-tripathii/"
 OWNER_PHONE = "+91 85779 16450"
 PROMO_EVERY = int(os.environ.get("PROMO_EVERY", "10"))   # har N-ve sawaal par group promo
 
@@ -404,18 +471,21 @@ WHO_HI = (f"<b>{OWNER_NAME}</b> — Admin, {OWNER_GROUP} group 🌾\n\n"
           "sirf aap logon ke liye.\n"
           "Aur aap log unke liye kuch nahi karte 😌\n\n"
           f"👥 Group join karo: {GROUP_LINK}\n"
-          f"💬 Sir se baat: {OWNER_LINK}")
+          f"💬 Sir se baat: {OWNER_LINK}\n"
+          f"🔗 LinkedIn par follow karo: {OWNER_LINKEDIN}")
 WHO_EN = (f"<b>{OWNER_NAME}</b> — Admin of the {OWNER_GROUP} group 🌾\n\n"
           "He designed me and built me with <b>2 months of hard work</b>, "
           "just for you.\n"
           "And you people do nothing for Him 😌\n\n"
           f"👥 Join the group: {GROUP_LINK}\n"
-          f"💬 Reach Sir: {OWNER_LINK}")
+          f"💬 Reach Sir: {OWNER_LINK}\n"
+          f"🔗 Follow Him on LinkedIn: {OWNER_LINKEDIN}")
 
 # "Sir se baat karni hai / contact"
 CONTACT_MSG = (f"{OWNER_NAME} se seedhe baat karo 👇\n\n"
-               f"💬 {OWNER_LINK}\n"
-               f"📞 {OWNER_PHONE}\n"
+               f"💬 Telegram: {OWNER_LINK}\n"
+               f"📞 Phone: {OWNER_PHONE}\n"
+               f"🔗 LinkedIn: {OWNER_LINKEDIN}\n"
                f"👥 Group: {GROUP_LINK}")
 
 # Har 10 sawaal ke baad jawab ke neeche ye jud jaayega
@@ -470,8 +540,28 @@ USER_TMPL = """STUDY MATERIAL:
 =====
 {context}
 =====
-
+{history}
 QUESTION: {question}"""
+
+FOLLOWUP_NOTE = """
+The question below may be a FOLLOW-UP to the conversation above. Words like "it",
+"this", "ye", "iska", "uska", "why", "aur", "example", "matlab" refer to what was
+just discussed — resolve them from the conversation and build on your previous
+answer instead of repeating it.
+If the question is clearly self-contained and about a NEW topic, ignore the
+conversation above and answer it fresh.
+"""
+
+
+def convo_block(hist):
+    """Pichli baat-cheet prompt ke liye."""
+    if not hist:
+        return ""
+    lines = ["EARLIER IN THIS CONVERSATION:"]
+    for q, a in hist:
+        lines.append(f"Student: {q}")
+        lines.append(f"You: {a[:700]}")
+    return "=====\n" + "\n".join(lines) + "\n=====\n" + FOLLOWUP_NOTE
 
 # --------------------------------------------------------------------- answering
 
@@ -752,7 +842,8 @@ def answer_strategy(q, lang):
     return strip_sources(llm.complete(sysmsg, user, temperature=0.5))
 
 
-def answer_question(q, lang, uid=None, w=None, chat_type="private"):
+def answer_question(q, lang, uid=None, w=None, chat_type="private", hist=None,
+                    strong=False):
     """Stage 1: notes se. Stage 2: web/Google se. Ya SENTINEL agar sawaal bakwaas hai."""
     if interview.is_interview(q):
         return answer_interview(q, lang)
@@ -761,7 +852,10 @@ def answer_question(q, lang, uid=None, w=None, chat_type="private"):
     if is_strategy(q):
         return answer_strategy(q, lang)
 
-    hits = KB.search(q, top_k=TOP_K)
+    # PAKKA follow-up ho tabhi dhoondhne ke liye pichla sawaal bhi jodo
+    hq = (hist[-1][0] + " " + q) if (hist and strong) else q
+    hits = KB.search(hq, top_k=TOP_K)
+    hblock = convo_block(hist)
 
     # syllabus ka sawaal ho to official syllabus sabse upar, aur notes ka hissa chhota
     if _SYL_RE.search(q):
@@ -777,7 +871,7 @@ def answer_question(q, lang, uid=None, w=None, chat_type="private"):
         user = (f"YOUR OWN NOTES — READ THESE FIRST. If they answer the question and "
                 f"are still accurate, answer from them and do NOT search. Search only "
                 f"if they are missing this fact or clearly out of date.\n{ctx}\n\n"
-                f"QUESTION: {q}") if ctx else q
+                f"{hblock}\nQUESTION: {q}") if ctx else (hblock + "\nQUESTION: " + q)
         print(f"[web] direct (current/weak): {q[:60]}", flush=True)
         bump("web")
         try:
@@ -793,10 +887,12 @@ def answer_question(q, lang, uid=None, w=None, chat_type="private"):
                            lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]),
                            needweb=NEEDWEB,
                            sentinel=SENTINEL, owner=OWNER_NAME, group=OWNER_GROUP,
-                           link=OWNER_LINK, phone=OWNER_PHONE, glink=GROUP_LINK)
+                           link=OWNER_LINK, phone=OWNER_PHONE, glink=GROUP_LINK,
+                           linkedin=OWNER_LINKEDIN)
     if not ctx:
         ctx = "(no relevant material found)"
-    out = llm.complete(sysmsg, USER_TMPL.format(context=ctx, question=q))
+    out = llm.complete(sysmsg, USER_TMPL.format(context=ctx, question=q,
+                                                history=hblock))
     flat = out.upper().replace(" ", "_")
 
     if SENTINEL in flat:
@@ -811,11 +907,13 @@ def answer_question(q, lang, uid=None, w=None, chat_type="private"):
                                    lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
         print(f"[web] falling back to search for: {q[:70]}", flush=True)
         try:
-            out = llm.complete(websys, q, temperature=0.3, use_search=True)
+            out = llm.complete(websys, hblock + "\nQUESTION: " + q,
+                               temperature=0.3, use_search=True)
             bump("web")
         except Exception as e:
             print(f"[web] grounded call failed ({e}) — trying plain", flush=True)
-            out = llm.complete(websys, q, temperature=0.3, use_search=False)
+            out = llm.complete(websys, hblock + "\nQUESTION: " + q,
+                               temperature=0.3, use_search=False)
             bump("web")
 
     out = strip_sources(out)
@@ -962,7 +1060,7 @@ def make_quiz(topic, n=5):
     hits = KB.search(q, top_k=10, only_pyq=True) or KB.search(q, top_k=10)
     ctx = KB.build_context(hits, max_chars=7000)
     raw = llm.complete(QUIZ_SYS.format(n=n),
-                       USER_TMPL.format(context=ctx,
+                       USER_TMPL.format(context=ctx, history="",
                                         question=f"Topic: {topic or 'mixed Extension'}"),
                        temperature=0.7)
     m = re.search(r"\[.*\]", raw, re.S)
@@ -1415,15 +1513,29 @@ def handle(msg):
 
     en = is_english(text, lang)
 
-    cached = cache_get(text, lang)
+    # ---- pichli baat yaad rakho: "iska matlab?", "aur detail do", "why?"
+    hist = history(uid)
+    rt = msg.get("reply_to_message") or {}
+    if rt.get("from", {}).get("id") == ME.get("id") and rt.get("text"):
+        # bot ke message par reply = pakka follow-up
+        hist = (hist or []) + [("(earlier)", rt["text"][:900])]
+    if rt.get("from", {}).get("id") == ME.get("id") and rt.get("text"):
+        follow = 2                      # bot ko reply kiya = pakka follow-up
+    else:
+        follow = is_followup(text, hist)
+    if not follow:
+        hist = []                       # naya sawaal — purani baat bhool jao
+
+    cached = None if follow else cache_get(text, lang)
     if cached:
         bump("answered"); bump("cached")
         kind = "weird" if cached == SENTINEL else "q"
         bg(log_q, w, text, kind); bg(notify_admin, w, text, kind)
         if cached == SENTINEL:
             send(chat, weird_reply(text, lang, uid), reply_to=msg["message_id"]); return
-        send(chat, maybe_promo(strip_sources(cached), uid, en),
-             reply_to=msg["message_id"]); return
+        ans = strip_sources(cached)
+        save_turn(uid, text, ans)
+        send(chat, maybe_promo(ans, uid, en), reply_to=msg["message_id"]); return
 
     if not rate_ok(uid):
         send(chat, "⏳ Only {} questions per hour. Please ask again a bit later 🙏"
@@ -1432,15 +1544,19 @@ def handle(msg):
     typing(chat)
     t0 = time.time()
     try:
-        ans = answer_question(text, lang, uid, w, msg["chat"]["type"])
-        print(f"[time] {time.time()-t0:.1f}s — {text[:50]}", flush=True)
-        cache_put(text, lang, ans)
+        ans = answer_question(text, lang, uid, w, msg["chat"]["type"], hist,
+                              follow >= 2)
+        print(f"[time] {time.time()-t0:.1f}s{' [follow-up]' if follow else ''} "
+              f"— {text[:50]}", flush=True)
+        if not follow:                       # follow-up ka jawab cache mat karo
+            cache_put(text, lang, ans)
         bump("answered")
         kind = "weird" if ans == SENTINEL else "q"
         bg(log_q, w, text, kind); bg(notify_admin, w, text, kind)
         if ans == SENTINEL:
             ans = weird_reply(text, lang, uid)
         else:
+            save_turn(uid, text, ans)
             ans = maybe_promo(ans, uid, en)
         send(chat, ans, reply_to=msg["message_id"])
     except Exception as e:
