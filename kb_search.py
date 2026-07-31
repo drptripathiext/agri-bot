@@ -150,7 +150,15 @@ class KnowledgeBase:
                 scores[i] += wt * idf * (tf * (self.k1 + 1)) / denom
         return sorted(scores.items(), key=lambda x: -x[1])[:top]
 
-    def search(self, query, top_k=8, pool=60):
+    # Kaun si files me previous-year / MCQ material hai
+    PYQ_SRC = re.compile(r"(?i)(mock|test|paper|pyq|previous|questions?|mcq|quiz|"
+                         r"\bkey\b|exam|set\s*[ivx0-9]|net\s*20|srf|ars\s*net|"
+                         r"one\s*liner|oneliner)")
+
+    def is_pyq_src(self, src):
+        return bool(self.PYQ_SRC.search(src))
+
+    def search(self, query, top_k=8, pool=60, only_pyq=False):
         hi_terms, roman = [], ""
         if re.search(r"[ऀ-ॿ]", query):
             hi_terms, roman = hindi_boost(query)
@@ -173,23 +181,31 @@ class KnowledgeBase:
         qset = set(q)
         bigrams = {(q[i], q[i + 1]) for i in range(len(q) - 1)}
         rescored = []
+        src_toks = {}
         for i, s in hits:
             toks = tokenize(self.chunks[i]["text"])
             tset = set(toks)
             cover = len(qset & tset) / max(len(qset), 1)
+            # file ke naam se match ho to boost ("ASRB syllabus" -> Syllabus ASRB.pdf)
+            src = self.chunks[i]["src"]
+            if src not in src_toks:
+                src_toks[src] = set(tokenize(src))
+            title = len(qset & src_toks[src]) / max(len(qset), 1)
             # phrase/proximity bonus: query bigrams appearing in the chunk
             if bigrams:
                 cb = {(toks[j], toks[j + 1]) for j in range(len(toks) - 1)}
                 phrase = len(bigrams & cb) / len(bigrams)
             else:
                 phrase = 0.0
-            rescored.append((i, s * (1 + 1.3 * cover + 1.0 * phrase)))
+            rescored.append((i, s * (1 + 1.3 * cover + 1.0 * phrase + 1.6 * title)))
         rescored.sort(key=lambda x: -x[1])
 
         # keep diverse sources: max 3 chunks per source file
         out, per_src = [], Counter()
         for i, s in rescored:
             src = self.chunks[i]["src"]
+            if only_pyq and not self.is_pyq_src(src):
+                continue
             if per_src[src] >= 3:
                 continue
             per_src[src] += 1

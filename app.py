@@ -18,6 +18,7 @@ import llm
 import syllabus
 import interview
 import special
+import mcq
 from kb_search import KnowledgeBase
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -721,10 +722,44 @@ def answer_special(q, lang):
     return strip_sources(llm.complete(sysmsg, user, temperature=0.75))
 
 
+def answer_pyq(q, lang):
+    """PYQ / MCQ ke sawaal — pehle asli bank se, na mile to question-bank files se."""
+    # asli PYQ bank — turant, bina API call ke, asli answer key ke saath
+    direct = mcq.search(q, limit=6)
+    if len(direct) >= 3:
+        bump("pyq")
+        return (mcq.as_text(direct)
+                + "\n\n———\n📝 To attempt these, send  `/quiz`")
+
+    hits = KB.search(q, top_k=10, only_pyq=True) or KB.search(q, top_k=8)
+    ctx = KB.build_context(hits, max_chars=7000)
+    sysmsg = PYQ_SYS.format(name=BOT_NAME,
+                            lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
+    bump("pyq")
+    return strip_sources(llm.complete(
+        sysmsg, f"QUESTION BANK:\n=====\n{ctx}\n=====\n\nSTUDENT ASKED: {q}",
+        temperature=0.3))
+
+
+def answer_strategy(q, lang):
+    """Preparation / strategy / motivation — professor ki tarah."""
+    sysmsg = STRATEGY_SYS.format(name=BOT_NAME,
+                                 lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
+    units = "\n".join(f"Unit {n}: {t}" for n, t, _ in syllabus.UNITS)
+    user = (f"OFFICIAL SYLLABUS UNITS:\n{units}\n\nSTUDENT ASKED: {q}"
+            if units else q)
+    bump("strategy")
+    return strip_sources(llm.complete(sysmsg, user, temperature=0.5))
+
+
 def answer_question(q, lang, uid=None, w=None, chat_type="private"):
     """Stage 1: notes se. Stage 2: web/Google se. Ya SENTINEL agar sawaal bakwaas hai."""
     if interview.is_interview(q):
         return answer_interview(q, lang)
+    if _PYQ_RE.search(q):
+        return answer_pyq(q, lang)
+    if is_strategy(q):
+        return answer_strategy(q, lang)
 
     hits = KB.search(q, top_k=TOP_K)
 
@@ -796,23 +831,172 @@ def answer_question(q, lang, uid=None, w=None, chat_type="private"):
     return out
 
 
+# ------------------------------------------------------------ PYQ / MCQ mode
+
+_PYQ_RE = re.compile(r"""(?ix)
+    \b(pyq|pyqs|p\.?y\.?q)\b
+  | \bmcq s?\b | \bmcqs?\b
+  | previous\s*(year|yr)s?\s*(question|paper|q)
+  | \bpast\s*(paper|question)s?\b
+  | (question|q)\s*(bank|paper|set)
+  | \bobjective\s*question
+  | \bone\s*liner s?\b
+  | (asrb|icar|ars|srf|jrf|net)\s*(net\s*)?20\d\d\s*(paper|question|pyq)
+""")
+
+PYQ_SYS = """You are {name}, an examiner for Indian agriculture competitive exams
+(ASRB NET / ARS / SRF / JRF / SMS / STO — Agricultural Extension).
+
+{lang_rule}
+
+The QUESTION BANK below contains real previous-year questions, mock tests and
+one-liners. Use it to answer.
+
+RULES:
+1. If the student asks for previous-year questions on a topic, give them as a clean
+   numbered list. For each: the question, then **Ans:** the correct answer in bold,
+   and a one-line reason if it is not obvious.
+2. If the student pastes a question and asks for the answer, give the correct option
+   in bold first, then one or two lines of justification. If the material shows a
+   different answer than you would give, trust the material's answer key.
+3. Give 5-8 questions unless the student asks for a specific number.
+4. Prefer questions that actually appear in the QUESTION BANK. Do not invent a
+   previous-year question and label it as one. If the bank is thin on that topic,
+   say so in one short line and add well-framed practice questions clearly marked
+   as **Practice**.
+5. Never name the source file, book or paper.
+6. No preamble. Start with the first question.
+7. End with one line telling them to use /quiz for an attemptable version."""
+
+
+# ------------------------------------------------------------ strategy mode
+
+# Pakke signals — inhe akela hi kaafi maana jaata hai
+_STRAT_STRONG = re.compile(r"""(?ix)
+    \b(strategy|strategies|stratergy|startegy)\b
+  | how\s+(to|do\s+i|should\s+i|can\s+i)\s+
+      (prepare|study|crack|clear|pass|begin|approach|score|qualify)
+  | (preparation|padhai|taiyari|tayari)\s*(kaise|kese|kaisi|plan|tips?|strategy)
+  | \b(study|preparation|revision|time\s*table|timetable)\s*plan\b
+  | (crack|clear|qualify|pass)\s+(the\s+)?(asrb|icar|ars|net|srf|jrf|exam)
+  | \b(kitna|kitne)\s*(time|ghante|hours?|months?|mahine|din)\b
+  | \b(book|books|source|sources)\s*(list|recommend|suggest|batao|kaun|konsi|kaunsi)
+  | \bwhere\s+(do\s+i\s+)?start\b
+  | \b(motivat|demotivat|give\s*up|giveup|nahi\s*ho\s*pa|dar\s*lag|confidence|
+       hopeless|frustrat|burnout|thak\s*gaya|man\s*nahi\s*lag)\w*
+""")
+
+# Dheele signals — sirf tab jab exam/padhai ka context bhi ho
+_STRAT_LOOSE = re.compile(r"""(?ix)
+    kaise\b[^?.\n]{0,22}\b(kare|karu|karun|kru|karein|karna|padhu|padhe|padhna|
+                            nikale|nikalu|nikalna|crack|clear|prepare|start|shuru)
+  | \b(prepare|padhna|padhai|taiyari)\b
+""")
+_STRAT_CTX = re.compile(r"""(?ix)
+    \b(exam|exams|asrb|icar|ars|net|srf|jrf|sms|sto|paper|syllabus|
+       padhai|taiyari|tayari|preparation|study|selection|qualify|
+       tayyari|revision|mock|pyq)\b
+""")
+
+
+def is_strategy(q):
+    if _STRAT_STRONG.search(q):
+        return True
+    return bool(_STRAT_LOOSE.search(q) and _STRAT_CTX.search(q))
+
+STRATEGY_SYS = """You are {name}, speaking as a senior ICAR Agricultural Scientist and
+mentor who has cleared ASRB NET and ARS himself and has guided many students through it.
+
+{lang_rule}
+
+The student is asking about preparation, strategy, or is feeling low about the exam.
+Respond like a professor who genuinely wants them to succeed — not like a website.
+
+HOW TO ANSWER:
+1. Be CONCRETE. Real numbers, real sequence, real time-splits. "Study hard" is useless;
+   "Unit 1 and 9 carry the most questions — give them your first three weeks" is useful.
+2. Structure it: where to start → what order → how much time → how to revise →
+   how to test yourself. Use short bullets, bold the key actions.
+3. Ground it in the actual ASRB Agricultural Extension syllabus (10 units) and in what
+   the paper actually rewards: exact years, full forms, committee names, scheme details,
+   Rogers, Bennett, research methodology, statistics.
+4. Push them toward ACTIVE study — writing one-liners, solving PYQs, timed mocks,
+   revision cycles — not passive reading.
+5. Tell them what usually goes wrong: starting with the fattest book, no revision cycle,
+   never attempting a full timed paper, ignoring statistics, and chasing new material
+   instead of finishing what they have.
+6. MOTIVATE — honestly, not cheaply. Acknowledge that this exam is hard and slow, that
+   plateaus are normal, and that consistency beats intensity. If they sound low or
+   defeated, address that FIRST, warmly, before any plan.
+7. Close with ONE thing they can do today. Just one.
+8. Under 220 words. No preamble, no "great question". Never name books, files or sources.
+9. Never say you are an AI, Gemini or Google."""
+
+
 QUIZ_SYS = """You are a question setter for Indian agriculture competitive exams
-(ICAR NET / ARS / SRF). From the STUDY MATERIAL, create {n} multiple-choice questions.
-Format each exactly like:
+(ASRB NET / ARS / SRF — Agricultural Extension). Using the STUDY MATERIAL, write
+{n} exam-standard multiple-choice questions.
 
-Q1. <question>
-(a) ... (b) ... (c) ... (d) ...
+Reply with ONLY a JSON array. No markdown fence, no text before or after:
 
-After all questions, output a line "ANSWERS: 1-b, 2-d, ..." and nothing else.
-Questions must be answerable from the STUDY MATERIAL. Use English."""
+[{{"q":"question text","o":["option A","option B","option C","option D"],
+  "a":0,"e":"one-line reason"}}]
+
+RULES
+- "a" is the 0-based index of the correct option.
+- "q" max 250 characters. Each option max 90 characters. "e" max 180 characters.
+- Exactly 4 options. Exactly one correct.
+- Questions must be answerable from the STUDY MATERIAL — real facts, years, names,
+  full forms, theorists, schemes. Wrong options must be plausible, not silly.
+- English only. Valid JSON only."""
 
 
 def make_quiz(topic, n=5):
-    hits = KB.search(topic or "extension education", top_k=10)
-    ctx = KB.build_context(hits, max_chars=8000)
-    return llm.complete(QUIZ_SYS.format(n=n),
-                        USER_TMPL.format(context=ctx, question=f"Topic: {topic or 'mixed'}"),
-                        temperature=0.7)
+    """Quiz banao. Pehle asli PYQ bank se (instant, sahi), na mile to AI se."""
+    real = mcq.pick(topic, n)
+    if len(real) >= min(n, 3):
+        return [{"q": i["q"], "o": i["o"], "a": i["a"],
+                 "e": (f"Asked in: {i['tag']}" if i.get("tag") else "")[:190]}
+                for i in real]
+    q = topic or "extension education"
+    hits = KB.search(q, top_k=10, only_pyq=True) or KB.search(q, top_k=10)
+    ctx = KB.build_context(hits, max_chars=7000)
+    raw = llm.complete(QUIZ_SYS.format(n=n),
+                       USER_TMPL.format(context=ctx,
+                                        question=f"Topic: {topic or 'mixed Extension'}"),
+                       temperature=0.7)
+    m = re.search(r"\[.*\]", raw, re.S)
+    if not m:
+        raise ValueError("quiz JSON not found")
+    items = json.loads(m.group())
+    out = []
+    for it in items:
+        opts = [str(o)[:95] for o in (it.get("o") or [])][:10]
+        try:
+            ans = int(it.get("a", 0))
+        except Exception:
+            ans = 0
+        if len(opts) < 2 or not (0 <= ans < len(opts)):
+            continue
+        out.append({"q": str(it.get("q", ""))[:290],
+                    "o": opts, "a": ans, "e": str(it.get("e", ""))[:190]})
+    if not out:
+        raise ValueError("no valid quiz items")
+    return out
+
+
+def send_quiz(chat, items, reply_to=None):
+    """Telegram ke native quiz poll — user tap karke attempt kar sakta hai."""
+    sent_n = 0
+    for it in items:
+        r = tg("sendPoll", chat_id=chat, question=it["q"], options=it["o"],
+               type="quiz", correct_option_id=it["a"],
+               explanation=it["e"] or None, is_anonymous=False,
+               reply_to_message_id=reply_to if sent_n == 0 else None)
+        if r:
+            sent_n += 1
+        time.sleep(0.4)                 # Telegram ko saans lene do
+    return sent_n
 
 # --------------------------------------------------------------------- commands
 
@@ -830,9 +1014,14 @@ in the same language.
 <b>Commands</b>
 /ask &lt;question&gt; — get an answer
 /syllabus [unit] — official ASRB NET/ARS syllabus
+/quiz [n] [topic] — attemptable MCQ practice, e.g. <code>/quiz 5 diffusion</code>
+/topics — all PYQ topics you can practise
 /interview — ARS / ASRB interview strategy
 /mock [topic] — mock interview round (Extension by default)
-/quiz &lt;topic&gt; — 5 MCQ practice questions
+
+<b>Just ask normally for</b>
+• PYQs — <code>previous year questions on ATMA</code>
+• Strategy — <code>how to prepare for ASRB NET?</code>
 /lang auto|en|hi|hinglish — set answer language
 /contact — reach Tripathi Sir
 /stats — bot usage
@@ -1099,6 +1288,14 @@ def handle(msg):
             cmd_sources(chat, msg, uid); return
         if cmd in ("syllabus", "syl"):
             cmd_syllabus(chat, msg, arg); return
+        if cmd in ("topics", "topic"):
+            rows = mcq.topic_list()
+            body = "\n".join(f"<b>{n:>4}</b>  {html.escape(t)}" for t, n in rows)
+            tg("sendMessage", chat_id=chat, parse_mode="HTML",
+               reply_to_message_id=msg["message_id"],
+               text=(f"📚 <b>{sum(n for _, n in rows)} previous-year questions</b>\n\n"
+                     f"{body}\n\nPractice: <code>/quiz 5 gender</code>"))
+            return
         if cmd in ("interview", "viva"):
             tg("sendMessage", chat_id=chat, text=interview.blueprint_summary(),
                parse_mode="HTML", disable_web_page_preview=True,
@@ -1138,15 +1335,29 @@ def handle(msg):
                 tg("sendMessage", chat_id=chat,
                    text="Usage: /lang auto | en | hi | hinglish")
             return
-        if cmd == "quiz":
+        if cmd in ("quiz", "practice", "test"):
             if not rate_ok(uid):
                 send(chat, "⏳ Hourly limit reached. Please try again in a while.",
                      reply_to=msg["message_id"]); return
             typing(chat)
+            m2 = re.match(r"^(\d+)\s*(.*)$", arg or "")
+            n = max(1, min(10, int(m2.group(1)))) if m2 else 5
+            topic = (m2.group(2) if m2 else arg).strip()
+            if msg["chat"]["type"] != "private":
+                n = min(n, 5)          # group me Telegram rate limit lag jaati hai
             try:
-                send(chat, make_quiz(arg), reply_to=msg["message_id"])
-                bump("answered")
-            except Exception as e:
+                items = make_quiz(topic, n)
+                tg("sendMessage", chat_id=chat, parse_mode="HTML",
+                   reply_to_message_id=msg["message_id"],
+                   text=(f"📝 <b>{len(items)} questions</b>"
+                         + (f" · {html.escape(topic[:60])}" if topic else "")
+                         + "\nTap your answer — you will see the result instantly."))
+                ok = send_quiz(chat, items)
+                if not ok:
+                    raise RuntimeError("polls not delivered")
+                bump("answered"); bump("quiz")
+            except Exception:
+                traceback.print_exc()
                 send(chat, "😕 Could not build the quiz right now. Please try again.",
                      reply_to=msg["message_id"])
             return
@@ -1325,7 +1536,8 @@ def main():
         {"command": "syllabus", "description": "Official ASRB NET / ARS syllabus"},
         {"command": "interview", "description": "ARS / ASRB interview strategy"},
         {"command": "mock", "description": "Mock interview round (Extension)"},
-        {"command": "quiz", "description": "5 MCQ practice questions"},
+        {"command": "quiz", "description": "Attemptable MCQ practice"},
+        {"command": "topics", "description": "PYQ topics you can practise"},
         {"command": "lang", "description": "auto | en | hi | hinglish"},
         {"command": "contact", "description": "Reach Tripathi Sir"},
         {"command": "stats", "description": "Bot usage"},
