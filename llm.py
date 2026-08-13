@@ -154,7 +154,7 @@ def search_allowed():
     return time.time() >= SEARCH_OFF_UNTIL[0]
 
 
-def _variants(system, user, temperature, use_search):
+def _variants(system, user, temperature, use_search, max_tokens=None):
     """Sabse feature-rich request se sabse simple tak — jo chal jaye wahi sahi."""
     def base(gen, extra=None):
         b = {"systemInstruction": {"parts": [{"text": system}]},
@@ -165,7 +165,7 @@ def _variants(system, user, temperature, use_search):
             b.update(extra)
         return b
 
-    full = {"temperature": temperature, "maxOutputTokens": MAX_OUT}
+    full = {"temperature": temperature, "maxOutputTokens": max_tokens or MAX_OUT}
     nothink = dict(full, thinkingConfig={"thinkingBudget": 0})
     out = []
     if use_search and search_allowed():
@@ -187,7 +187,7 @@ def _variants(system, user, temperature, use_search):
     return out
 
 
-def _gemini(system, user, temperature, use_search=False):
+def _gemini(system, user, temperature, use_search=False, max_tokens=None):
     """Har variant ko har key ke saath try karo; 429 par thoda ruk kar dubara."""
     model = gemini_model()
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
@@ -195,11 +195,13 @@ def _gemini(system, user, temperature, use_search=False):
     last = "unknown error"
     slot = "search" if use_search else "plain"
     t0 = time.time()
+    # lamba (descriptive) jawab likhne me zyada waqt lagta hai — deadline bada do
+    deadline = DEADLINE * (2.5 if (max_tokens or MAX_OUT) > MAX_OUT else 1)
 
-    for label, body in _variants(system, user, temperature, use_search):
+    for label, body in _variants(system, user, temperature, use_search, max_tokens):
         # har variant ko RETRIES baar: fail -> 1s ruko -> doosri koshish
         for attempt in range(max(1, RETRIES)):
-            left = DEADLINE - (time.time() - t0)
+            left = deadline - (time.time() - t0)
             if left < 5:                      # bas, ab agle provider par jao
                 print(f"[llm] deadline hit after {time.time()-t0:.0f}s", flush=True)
                 LAST_ERROR["when"] = int(time.time()); LAST_ERROR["detail"] = last
@@ -312,7 +314,8 @@ def diagnose():
     return "\n".join(out)
 
 
-def _openai_style(base, key, model, system, user, temperature, extra_headers=None):
+def _openai_style(base, key, model, system, user, temperature, extra_headers=None,
+                  max_tokens=None):
     h = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     if extra_headers:
         h.update(extra_headers)
@@ -321,8 +324,8 @@ def _openai_style(base, key, model, system, user, temperature, extra_headers=Non
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
         "temperature": temperature,
-        "max_tokens": MAX_OUT,
-    }, timeout=TIMEOUT)
+        "max_tokens": max_tokens or MAX_OUT,
+    }, timeout=TIMEOUT if (max_tokens or MAX_OUT) <= MAX_OUT else max(TIMEOUT, 180))
     if r.status_code != 200:
         raise RuntimeError(f"{r.status_code} {r.text[:180]}")
     return r.json()["choices"][0]["message"]["content"].strip()
@@ -334,7 +337,7 @@ GROQ_MODELS = [m.strip() for m in os.environ.get(
 _groq_model = [None]                       # jo chala use yaad rakho
 
 
-def _groq(system, user, temperature):
+def _groq(system, user, temperature, max_tokens=None):
     last = None
     models = ([_groq_model[0]] if _groq_model[0] else []) + \
              [m for m in GROQ_MODELS if m != _groq_model[0]]
@@ -345,7 +348,8 @@ def _groq(system, user, temperature):
                 break
             try:
                 out = _openai_style("https://api.groq.com/openai/v1", key, model,
-                                    system, user, temperature)
+                                    system, user, temperature,
+                                    max_tokens=max_tokens)
                 if _groq_model[0] != model:
                     _groq_model[0] = model
                     print(f"[llm] groq model: {model}", flush=True)
@@ -362,7 +366,7 @@ def _groq(system, user, temperature):
     raise RuntimeError(f"groq failed: {last}")
 
 
-def _openrouter(system, user, temperature):
+def _openrouter(system, user, temperature, max_tokens=None):
     last = None
     model = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
     for _ in range(max(1, len(OPENROUTER.keys))):
@@ -373,7 +377,7 @@ def _openrouter(system, user, temperature):
             return _openai_style("https://openrouter.ai/api/v1", key, model,
                                  system, user, temperature,
                                  {"HTTP-Referer": "https://huggingface.co",
-                                  "X-Title": "AgriBot"})
+                                  "X-Title": "AgriBot"}, max_tokens=max_tokens)
         except Exception as e:
             last = str(e)
     raise RuntimeError(f"openrouter failed: {last}")
@@ -401,7 +405,7 @@ def warmup():
 FAST_FIRST = os.environ.get("FAST_FIRST", "1") == "1"
 
 
-def complete(system, user, temperature=0.25, use_search=False):
+def complete(system, user, temperature=0.25, use_search=False, max_tokens=None):
     """Pehle sabse tez provider, jo fail ho to agla.
 
     use_search=True -> Gemini pehle (Google Search grounding sirf usi me hai).
@@ -426,8 +430,9 @@ def complete(system, user, temperature=0.25, use_search=False):
     errors = []
     for name, fn, rot in live:
         try:
-            out = (fn(system, user, temperature, use_search) if name == "gemini"
-                   else fn(system, user, temperature))
+            out = (fn(system, user, temperature, use_search, max_tokens)
+                   if name == "gemini"
+                   else fn(system, user, temperature, max_tokens))
             _ok(name)
             return out
         except Exception as e:

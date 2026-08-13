@@ -19,6 +19,12 @@ services:
         value: "25"
       - key: ALLOW_OUTSIDE_NOTES
         value: "1"
+      - key: WEBSITE
+        value: "https://www.agriextprep.co.in"
+      - key: PROMO_EVERY
+        value: "5"
+      - key: DETAIL_TOKENS
+        value: "3000"
       - key: TELEGRAM_BOT_TOKEN
         sync: false          # Render deploy ke waqt poochhega
       - key: GEMINI_API_KEY

@@ -385,10 +385,12 @@ RULES:
 1. Answer the question directly first, then give supporting detail.
 2. Use the STUDY MATERIAL as your primary source. Quote exact facts, years, names,
    numbers and definitions from it — aspirants need exam-accurate detail.
-3. BE BRIEF. Answer in under 120 words. Lead with the direct answer in one line,
-   then 3-5 short bullets of exam-critical detail (years, full forms, names, figures).
-   Bold the key terms. No introductions, no summaries, no "in conclusion".
-   Only go longer if the student explicitly asks to "explain in detail".
+3. BE BRIEF BY DEFAULT. Answer in under 120 words. Lead with the direct answer in one
+   line, then 3-5 short bullets of exam-critical detail (years, full forms, names,
+   figures). Bold the key terms. No introductions, no summaries, no "in conclusion".
+   EXCEPTION: if the student asks to explain in detail / descriptive / "vistar se" /
+   full explanation / short note / discuss — then write a long, well-structured,
+   teaching-style answer instead (see the DETAIL instructions if they are given).
 4. If the STUDY MATERIAL genuinely does not contain the answer, reply with EXACTLY
    this one token and nothing else — do not attempt a partial answer:
    {needweb}
@@ -428,6 +430,12 @@ RULES:
    follow Him on LinkedIn at {linkedin}.
    If asked how to contact Him, give {link}, {phone} and {linkedin}.
    Never say you are Gemini, Google, an LLM, or that you read PDFs or notes.
+10. OUR WEBSITE — {website}. It has the full syllabus, notes, free notes, mock tests,
+   mini quizzes, test series, PYQs and exam updates. Mention it (with the full link)
+   whenever the student asks about syllabus, exam pattern, mock test, test series,
+   quiz, notes, study material or where to practise — and whenever you are not fully
+   sure about an exam / syllabus / pattern detail, tell them to check {website}
+   instead of guessing. Do not repeat the link in every answer, only where it helps.
 """
 
 SENTINEL = "OFF_TOPIC_Q"
@@ -440,12 +448,18 @@ GROUP_LINK = "https://t.me/AgriExtPrep"
 OWNER_LINK = "https://t.me/asktripathii"
 OWNER_LINKEDIN = "https://www.linkedin.com/in/pramod-tripathii/"
 OWNER_PHONE = "+91 85779 16450"
-PROMO_EVERY = int(os.environ.get("PROMO_EVERY", "10"))   # har N-ve sawaal par group promo
+WEBSITE = os.environ.get("WEBSITE", "https://www.agriextprep.co.in")
+WEBSITE_SHORT = "agriextprep.co.in"
+PROMO_EVERY = int(os.environ.get("PROMO_EVERY", "5"))   # har N-ve sawaal par promo
+# Website par kya-kya hai — jawab me isi bhasha me batana hai
+WEBSITE_HAS = ("syllabus, notes, free notes, mock test, mini quiz, test series, "
+               "PYQs and exam updates")
 
 # --- Off-topic sawaal: 3 step escalation ---
 # 1st baar — bilkul polite
 POLITE_HI = ("Ye mera area nahi hai 😊 Main Agricultural Extension aur ASRB/ARS exam ki "
-             "taiyari me help karta hoon.\nSyllabus se kuch bhi poochho — main hoon yahan!")
+             "taiyari me help karta hoon.\nSyllabus se kuch bhi poochho — main hoon yahan!\n"
+             f"🌐 Notes, mock test aur quiz: {WEBSITE}")
 POLITE_EN = ("That is outside my area 😊 I help with Agricultural Extension and "
              "ASRB / ARS exam preparation.\nAsk me anything from the syllabus — I am here!")
 
@@ -470,6 +484,7 @@ WHO_HI = (f"<b>{OWNER_NAME}</b> — Admin, {OWNER_GROUP} group 🌾\n\n"
           "Unhone hi mujhe design kiya aur <b>2 mahine ki mehnat</b> se banaya — "
           "sirf aap logon ke liye.\n"
           "Aur aap log unke liye kuch nahi karte 😌\n\n"
+          f"🌐 Website: {WEBSITE}\n"
           f"👥 Group join karo: {GROUP_LINK}\n"
           f"💬 Sir se baat: {OWNER_LINK}\n"
           f"🔗 LinkedIn par follow karo: {OWNER_LINKEDIN}")
@@ -477,6 +492,7 @@ WHO_EN = (f"<b>{OWNER_NAME}</b> — Admin of the {OWNER_GROUP} group 🌾\n\n"
           "He designed me and built me with <b>2 months of hard work</b>, "
           "just for you.\n"
           "And you people do nothing for Him 😌\n\n"
+          f"🌐 Website: {WEBSITE}\n"
           f"👥 Join the group: {GROUP_LINK}\n"
           f"💬 Reach Sir: {OWNER_LINK}\n"
           f"🔗 Follow Him on LinkedIn: {OWNER_LINKEDIN}")
@@ -486,11 +502,38 @@ CONTACT_MSG = (f"{OWNER_NAME} se seedhe baat karo 👇\n\n"
                f"💬 Telegram: {OWNER_LINK}\n"
                f"📞 Phone: {OWNER_PHONE}\n"
                f"🔗 LinkedIn: {OWNER_LINKEDIN}\n"
-               f"👥 Group: {GROUP_LINK}")
+               f"👥 Group: {GROUP_LINK}\n"
+               f"🌐 Website: {WEBSITE}")
 
-# Har 10 sawaal ke baad jawab ke neeche ye jud jaayega
+# Har kuch sawaal ke baad jawab ke neeche ye jud jaayega (group aur website baari-baari)
 PROMO_HI = f"———\n📣 Roz ke notes, doubts aur updates ke liye group join karo 👉 {GROUP_LINK}"
 PROMO_EN = f"———\n📣 For daily notes, doubts and updates, join the group 👉 {GROUP_LINK}"
+
+PROMO_WEB_HI = (f"———\n🌐 Syllabus, notes, free notes, mock test, mini quiz, test series "
+                f"aur PYQ — sab kuch yahan milega 👉 {WEBSITE}")
+PROMO_WEB_EN = (f"———\n🌐 Syllabus, unit-wise notes, PYQs, timed mock tests, mini quizzes "
+                f"and ARS Mains answer writing — all here 👉 {WEBSITE}")
+
+_W = WEBSITE.rstrip("/")
+WEBSITE_MSG = (f"🌐 <b>AgriExtPrep</b> — {_W}\n"
+               "ASRB NET / ARS / SMS / ICAR AICE JRF-SRF · Agricultural Extension\n\n"
+               "Sab kuch ek jagah 👇\n"
+               f"📋 <b>Syllabus &amp; exam pattern</b> (free) — {_W}/asrb-extension-syllabus\n"
+               f"📘 <b>Unit-wise notes</b> — {_W}/asrb-net-extension-notes\n"
+               f"📄 <b>PYQs</b> (unit-wise) — {_W}/asrb-extension-pyqs\n"
+               f"⏱️ <b>Mock tests</b> (+3 / −1, real pattern) — {_W}/asrb-extension-mock-tests\n"
+               f"🖊️ <b>ARS Mains answer writing</b> (scientists se checked) — "
+               f"{_W}/ars-mains-extension-education\n"
+               f"📝 <b>Online tests &amp; mini quiz</b> — {_W}/pages/tests.html\n"
+               f"🎁 <b>Free notes &amp; free tests</b> — {_W}/free-agricultural-extension-study-material\n\n"
+               f"👉 Free account banao: {_W}/pages/register.html\n"
+               f"👥 Group: {GROUP_LINK}")
+
+# Jab syllabus / pattern / exam ka pura detail bot ke paas na ho
+WEB_TIP_HI = (f"\n\n🌐 Poora syllabus, mock test, mini quiz, test series aur free notes "
+              f"hamari website par hain 👉 {WEBSITE}")
+WEB_TIP_EN = (f"\n\n🌐 The full syllabus, mock tests, mini quizzes, test series and free "
+              f"notes are on our website 👉 {WEBSITE}")
 
 # Gaali / adult bhasha par
 ABUSE_HI = ("⚠️ Aisi bhasha yahan bilkul nahi chalegi.\n\n"
@@ -534,7 +577,10 @@ RULES:
    with EXACTLY this one token and nothing else:
    {sentinel}
    Exam-related questions — syllabus, pattern, PYQ, cut-off, eligibility, schemes,
-   current affairs in agriculture — are always GENUINE."""
+   current affairs in agriculture — are always GENUINE.
+9. If the question is about syllabus, exam pattern, mock tests, test series, quizzes,
+   notes or study material — or if you are not fully certain of an exam detail — point
+   the student to {website} (write the full link) instead of guessing."""
 
 USER_TMPL = """STUDY MATERIAL:
 =====
@@ -675,9 +721,28 @@ _RE_CONTACT = re.compile(r"""(?ix)
     )""")
 
 
+# "website kya hai", "notes kahan milenge", "mock test / test series kahan hai"
+_RE_SITE = re.compile(r"""(?ix)
+    \b(your\s*website|our\s*website|apk?i\s*website|tumhari\s*website|
+       website|web\s*site|agriextprep)\b
+  | (mock\s*test s?|test\s*series|mini\s*quiz|free\s*notes|study\s*material|
+     notes|pdf s?|material)
+      [^?.\n]{0,25}
+      \b(kahan|kaha|kahaan|kidhar|kaise|kese|milenge|milega|milti|milte|mil\s*sakte|
+         where|how|link|chahiye|do|de\s*do|bhejo|send|available)\b
+  | \b(kahan|kaha|kahaan|kidhar|where)\b [^?.\n]{0,25}
+      \b(mock\s*test s?|test\s*series|mini\s*quiz|free\s*notes|notes|material|
+         practice|quiz)\b
+""")
+
+
 def fixed_intent(q, lang):
     """Kuch sawaalon ka jawab pehle se tay hai — AI ko poochne ki zaroorat nahi."""
     en = is_english(q, lang)
+    # sirf chhote, seedhe sawaal — "ATMA ke notes detail me do" jaisa sawaal
+    # yahan nahi fansna chahiye
+    if len(q) <= 75 and not _DETAIL_RE.search(q) and _RE_SITE.search(q):
+        return WEBSITE_MSG
     if _RE_CONTACT.search(q):
         return CONTACT_MSG
     if _RE_WHO.search(q):
@@ -690,21 +755,37 @@ def fixed_intent(q, lang):
 # ---- gaali / adult bhasha ----
 # NOTE: "sex" (sex ratio), "rape" (rapeseed), "bc" (backward class) jaan-boojh kar
 # nahi rakhe — wo asli exam topics me aate hain.
+# Isi tarah "land" (land grant college, land reform, land holding), "myth",
+# "discuss", "asset" bhi kabhi gaali nahi maane jaayenge.
 _ABUSE = re.compile(r"""(?ix)\b(
     m[ae]d[ae]r?ch[o0]+d\w* | b[ae]h?[ae]nch[o0]+d\w* | bhench[o0]+d\w* | bsdk | bhsdk
   | bh[o0]+sd[ia]\w* | bh[o0]+sda\w* | ch[u+]t[iy]+a\w* | ch[u+]t[iy]e\w* | chutya\w*
   | g[a@]nd[u+]\w* | gaandu\w* | g[a@]{2}nd | ch[o0]+d[uo]? | ch[o0]+dn?a
-  | l[a@]nd | l[a@]ud[ae] | l[a@]wd[ae] | jh[a@]{1,2}t\w* | r[a@]nd[iy]\w*
+  | l[u+]nd | l[a@]ud[ae] | l[a@]wd[ae] | jh[a@]{1,2}t\w* | r[a@]nd[iy]\w*
   | h[a@]r[a@]m[iy]\w* | k[a@]m[iy]n[ae]\w* | b[a@]kch[o0]d\w* | t[a@]tt[iy]
-  | ch[u+]tt?[ae]d | m[uy]th\w* | b[o0]{2}bs? | p[e3]nis | v[a@]gin[a@] | p[o0]rn\w*
+  | ch[u+]tt?[ae]d | muth[hi]\w* | b[o0]{2}bs? | p[e3]nis | v[a@]gin[a@] | p[o0]rn\w*
   | nud[e3]s? | xxx | s[e3]xy | h[o0]rny | fuck\w* | f[u\*]ck | fck | shit
   | b[i1]tch\w* | b[a@]st[a@]rd | [a@]ssh[o0]l[e3] | d[i1]ckh?[e3]?[a@]?d?
   | pu[s\$]{2}y | wh[o0]r[e3] | slut | cunt | m[o0]th[e3]rfuck\w*
 )\b""")
 
 
+# Padhai ke shabd — inme se koi bhi ho to gaali ka shak khatam
+_SAFE_WORDS = re.compile(r"""(?ix)\b(
+    land\s*(grant|reform|reforms|holding|holdings|ceiling|use|tenure|army|records?)
+  | (grant|college|university|act|reform|tenure|acre|hectare|farm|farmer|soil|
+     crop|agri\w*|extension|rural|village|kisan|scheme|policy|exam|syllabus|
+     unit|chapter|theory|model|concept|definition|myth|mythology)
+)\b""")
+
+
 def is_abusive(text):
-    return bool(_ABUSE.search(text))
+    if not _ABUSE.search(text):
+        return False
+    # koi bhi padhai wala shabd mila -> ye gaali nahi, sawaal hai
+    if _SAFE_WORDS.search(text):
+        return False
+    return True
 
 
 def user_qcount(uid, add=True):
@@ -718,11 +799,18 @@ def user_qcount(uid, add=True):
 
 
 def maybe_promo(answer, uid, en):
-    """Har PROMO_EVERY-ve sawaal par group ka link jod do."""
+    """Har PROMO_EVERY-ve sawaal par promo — group aur website baari-baari."""
     n = user_qcount(uid)
-    if PROMO_EVERY > 0 and n % PROMO_EVERY == 0:
-        return answer + "\n\n" + (PROMO_EN if en else PROMO_HI)
-    return answer
+    if PROMO_EVERY <= 0 or n % PROMO_EVERY:
+        return answer
+    if WEBSITE and WEBSITE.rstrip("/").lower() in answer.lower():
+        return answer                       # jawab me pehle se website hai
+    turn = (n // PROMO_EVERY) % 2           # 1st -> website, 2nd -> group, ...
+    if turn == 1:
+        promo = PROMO_WEB_EN if en else PROMO_WEB_HI
+    else:
+        promo = PROMO_EN if en else PROMO_HI
+    return answer + "\n\n" + promo
 
 
 def weird_count(uid, add=False):
@@ -782,7 +870,8 @@ def local_fallback(q):
             return f"📘 Unit {n}: {t}\n\n{b}"
     units = "\n".join(f"Unit {n} — {t}" for n, t, _ in syllabus.UNITS)
     return (f"📘 {syllabus.HEADER}\n\n{units}\n\n"
-            "Send /syllabus 5 to get the full text of any unit.")
+            "Send /syllabus 5 to get the full text of any unit."
+            + WEB_TIP_EN)
 
 
 def answer_interview(q, lang):
@@ -823,7 +912,7 @@ def answer_pyq(q, lang):
 
     hits = KB.search(q, top_k=10, only_pyq=True) or KB.search(q, top_k=8)
     ctx = KB.build_context(hits, max_chars=7000)
-    sysmsg = PYQ_SYS.format(name=BOT_NAME,
+    sysmsg = PYQ_SYS.format(name=BOT_NAME, website=WEBSITE,
                             lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
     bump("pyq")
     return strip_sources(llm.complete(
@@ -833,13 +922,14 @@ def answer_pyq(q, lang):
 
 def answer_strategy(q, lang):
     """Preparation / strategy / motivation — professor ki tarah."""
-    sysmsg = STRATEGY_SYS.format(name=BOT_NAME,
+    sysmsg = STRATEGY_SYS.format(name=BOT_NAME, website=WEBSITE, glink=GROUP_LINK,
                                  lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
     units = "\n".join(f"Unit {n}: {t}" for n, t, _ in syllabus.UNITS)
     user = (f"OFFICIAL SYLLABUS UNITS:\n{units}\n\nSTUDENT ASKED: {q}"
             if units else q)
     bump("strategy")
-    return strip_sources(llm.complete(sysmsg, user, temperature=0.5))
+    return strip_sources(llm.complete(sysmsg, user, temperature=0.5,
+                                      max_tokens=1600))
 
 
 def answer_question(q, lang, uid=None, w=None, chat_type="private", hist=None,
@@ -847,10 +937,14 @@ def answer_question(q, lang, uid=None, w=None, chat_type="private", hist=None,
     """Stage 1: notes se. Stage 2: web/Google se. Ya SENTINEL agar sawaal bakwaas hai."""
     if interview.is_interview(q):
         return answer_interview(q, lang)
+    if _MAINS_RE.search(q):
+        return answer_mains(q, lang)
     if _PYQ_RE.search(q):
         return answer_pyq(q, lang)
     if is_strategy(q):
         return answer_strategy(q, lang)
+    if _DETAIL_RE.search(q):
+        return answer_detail(q, lang, hist)
 
     # PAKKA follow-up ho tabhi dhoondhne ke liye pichla sawaal bhi jodo
     hq = (hist[-1][0] + " " + q) if (hist and strong) else q
@@ -867,6 +961,7 @@ def answer_question(q, lang, uid=None, w=None, chat_type="private", hist=None,
     weak = (not hits) or hits[0]["score"] < 15
     if ALLOW_OUTSIDE and not _SYL_RE.search(q) and (_CURRENT_RE.search(q) or weak):
         websys = WEB_SYSTEM.format(name=BOT_NAME, owner=OWNER_NAME, sentinel=SENTINEL,
+                                   website=WEBSITE,
                                    lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
         user = (f"YOUR OWN NOTES — READ THESE FIRST. If they answer the question and "
                 f"are still accurate, answer from them and do NOT search. Search only "
@@ -888,7 +983,7 @@ def answer_question(q, lang, uid=None, w=None, chat_type="private", hist=None,
                            needweb=NEEDWEB,
                            sentinel=SENTINEL, owner=OWNER_NAME, group=OWNER_GROUP,
                            link=OWNER_LINK, phone=OWNER_PHONE, glink=GROUP_LINK,
-                           linkedin=OWNER_LINKEDIN)
+                           linkedin=OWNER_LINKEDIN, website=WEBSITE)
     if not ctx:
         ctx = "(no relevant material found)"
     out = llm.complete(sysmsg, USER_TMPL.format(context=ctx, question=q,
@@ -902,8 +997,9 @@ def answer_question(q, lang, uid=None, w=None, chat_type="private", hist=None,
     if NEEDWEB in flat or not strip_sources(out):
         if not ALLOW_OUTSIDE:
             return ("This topic is not covered in our material yet. "
-                    "Try asking about a related Extension topic 🙏")
+                    "Try asking about a related Extension topic 🙏" + WEB_TIP_EN)
         websys = WEB_SYSTEM.format(name=BOT_NAME, owner=OWNER_NAME, sentinel=SENTINEL,
+                                   website=WEBSITE,
                                    lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
         print(f"[web] falling back to search for: {q[:70]}", flush=True)
         try:
@@ -927,6 +1023,177 @@ def answer_question(q, lang, uid=None, w=None, chat_type="private", hist=None,
         if srcs:
             out += "\n\n📚 " + ", ".join(s[:55] for s in srcs)
     return out
+
+
+# ------------------------------------------------- descriptive / detail mode
+
+# "detail me batao", "descriptive", "vistar se", "short note", "discuss"
+_DETAIL_RE = re.compile(r"""(?ix)
+    \b(in\s*detail|detailed|detail\s*(me|mein|se)|details?\s*me[ei]n?)\b
+  | \bdescriptive(ly)?\b
+  | \b(full|complete|comprehensive|elaborate|exhaustive)\s*
+      (explanation|explain|answer|note|notes|detail|details)\b
+  | \bexplain\s+(it\s+)?(fully|completely|properly|thoroughly|in\s+depth)\b
+  | \bin\s*[-]?\s*depth\b | \bindepth\b
+  | \b(long|big|bada|lamba)\s*(answer|jawab|note)\b
+  | \bshort\s*note s?\b | \bwrite\s+(a\s+|short\s+)?note s?\b
+  | \b(discuss|elucidate|expound|critically\s*(examine|analyse|analyze))\b
+  | \b(vistar|vistaar|vistrit|vistritt)\b
+  | \b(pur[ia]|poor[ia])\s*(tarah|detail|jankari|explanation)\b
+  | \b(achhe|acche|ache)\s*se\s*(samjh|batao|bata|explain)\w*
+  | \bsamjh[aa]?\s*(do|dijiye|deejiye|kar\s*do)\b
+  | \bnotes?\s*(bana|banao|bnao|de\s*do|chahiye)\b
+""")
+
+DETAIL_TOP_K = int(os.environ.get("DETAIL_TOP_K", "12"))
+DETAIL_CTX = int(os.environ.get("DETAIL_CTX", "12000"))
+DETAIL_TOKENS = int(os.environ.get("DETAIL_TOKENS", "3000"))
+
+DETAIL_SYS = """You are {name}, a senior professor of Agricultural Extension who has
+taught ICAR NET / ASRB / ARS / SRF / JRF aspirants for years.
+
+{lang_rule}
+
+The student has asked for a DETAILED / DESCRIPTIVE explanation. Give them a full,
+teaching-style answer — the kind of notes they could revise from and write in a
+descriptive paper.
+
+HOW TO WRITE:
+1. Length: 500-800 words. Never a short answer. Never cut it off midway.
+2. Structure it with clear bold headings, in this order (skip a heading only if it
+   truly does not apply):
+   **Meaning / Definition** — the standard definition, with the person who gave it
+   and the year if known.
+   **Background / Origin** — when, where, why it came, by whom, under which
+   committee / Act / scheme.
+   **Key features / Components / Elements** — numbered points, each explained in
+   one or two lines, not just named.
+   **Types / Classification / Stages / Steps** — with a one-line note on each.
+   **Indian context / Example** — how it works in India, real institutes, schemes,
+   states or KVK/ATMA-level examples.
+   **Importance / Advantages** and **Limitations / Criticism** — both sides.
+   **Exam pointers** — 4-6 crisp one-liners: exact years, full forms, names,
+   figures, "who gave what", the facts that actually get asked.
+3. Use the STUDY MATERIAL as your primary source. Quote its exact years, names,
+   numbers and definitions. Add your own subject knowledge to fill genuine gaps,
+   but never invent a citation, year or statistic.
+4. Bold every key term the first time it appears. Use short paragraphs and bullets —
+   this is read on a phone.
+5. Teach, do not just list. After each technical point add a plain-language line so a
+   weak student also understands.
+6. NEVER name your sources — no book, PDF, notes, chapter, unit, author or file name.
+   No "according to the material". Just state the facts as if you know them.
+7. No preamble like "Sure" or "Great question". Start with the topic heading.
+8. End with ONE line: the single thing they must remember for the exam.
+9. If the topic is about syllabus, exam pattern, mock tests, test series or study
+   material, also point them to {website}.
+10. Never say you are Gemini, Google or an AI. Your knowledge comes from {owner}.
+11. If the message is not a genuine study question at all (gibberish, abuse, jokes,
+   personal or off-topic chat), reply with EXACTLY this one token and nothing else:
+   {sentinel}"""
+
+
+def answer_detail(q, lang, hist=None):
+    """Lamba, professor-style descriptive jawab."""
+    hits = KB.search(q, top_k=DETAIL_TOP_K)
+    ctx = KB.build_context(hits, DETAIL_CTX)
+    if _SYL_RE.search(q) and syllabus.UNITS:
+        ctx = syllabus.context_for(q, 3500) + "\n\n---\n\n" + ctx
+    sysmsg = DETAIL_SYS.format(name=BOT_NAME, owner=OWNER_NAME, website=WEBSITE,
+                               sentinel=SENTINEL,
+                               lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
+    hblock = convo_block(hist)
+    user = USER_TMPL.format(context=ctx or "(no relevant material found)",
+                            question=q, history=hblock)
+    weak = (not hits) or hits[0]["score"] < 12
+    bump("detail")
+    try:
+        out = llm.complete(sysmsg, user, temperature=0.35,
+                           use_search=bool(weak and ALLOW_OUTSIDE),
+                           max_tokens=DETAIL_TOKENS)
+    except Exception as e:
+        print(f"[detail] failed ({e}) — plain retry", flush=True)
+        out = llm.complete(sysmsg, user, temperature=0.35,
+                           max_tokens=DETAIL_TOKENS)
+    if SENTINEL in out.upper().replace(" ", "_"):
+        return SENTINEL
+    return strip_sources(out) or SENTINEL
+
+
+# ------------------------------------------------------------- ARS/ASRB MAINS
+
+_MAINS_RE = re.compile(r"""(?ix)
+    \bmains\b
+  | \bmain\s*(exam|paper|examination)\b
+  | \bdescriptive\s*(paper|exam|examination)\b
+  | \banswer\s*writing\b
+  | \bsubjective\s*(paper|exam|question)s?\b
+""")
+
+# Jin files me mains ka material hai
+_MAINS_SRC = re.compile(r"(?i)(mains|model\s*paper|plan\s*with\s*pyq|question\s*bank|"
+                        r"fully\s*syllabus)")
+
+MAINS_SYS = """You are {name}, a senior ICAR scientist who evaluates ARS / ASRB MAINS
+(descriptive) answer scripts in Agricultural Extension.
+
+{lang_rule}
+
+The QUESTION BANK below contains real ARS/ASRB Mains previous-year questions, unit-wise
+mains question banks and model papers.
+
+DECIDE WHAT THE STUDENT WANTS:
+A) If they are ASKING FOR QUESTIONS (mains PYQs, mains questions on a topic, model
+   paper, unit-wise mains questions):
+   - Give a clean numbered list of 8-12 questions taken from the QUESTION BANK.
+   - Keep each question exactly as it is asked in the paper, with its marks if shown.
+   - Group them by unit or sub-topic with bold mini-headings where that helps.
+   - Do NOT invent a previous-year question. If the bank is thin, say so in one short
+     line and add well-framed questions clearly marked as **Practice**.
+   - End with one line inviting them to ask for a model answer to any of them.
+
+B) If they PASTED A MAINS QUESTION and want the answer:
+   Write a FULL MODEL ANSWER, the way a topper writes it:
+   - **Introduction / Definition** (2-3 lines, with the authority and year).
+   - **Main body** under 3-5 bold sub-headings, each with crisp numbered points.
+   - Include exact years, full forms, committee names, scheme names, Acts, figures,
+     scientists and their contributions — this is what fetches marks.
+   - Add an Indian example (ICAR institute, KVK, ATMA, a state, a scheme) wherever
+     it fits, and a flow/diagram described in words if the topic allows.
+   - **Conclusion** (2-3 lines, forward-looking).
+   - Length by marks: 10 marks -> ~250 words, 15 marks -> ~400 words,
+     20 marks -> ~600 words. If marks are not given, write ~450 words.
+   - End with **Value addition:** — 3-4 one-line facts that lift the answer above average.
+
+RULES:
+1. Never name the source file, book, paper or notes.
+2. No preamble. Start with the first question or the answer heading.
+3. Never invent citations, years or statistics.
+4. Bold key terms and headings. Short paragraphs — this is read on a phone.
+5. Never say you are Gemini, Google or an AI.
+6. Mention {website} once at the end if the student would benefit from the mock tests,
+   test series or free notes there."""
+
+
+def answer_mains(q, lang):
+    """ARS / ASRB Mains — PYQ list ya pura model answer."""
+    hits = KB.search(q, top_k=14)
+    mains_hits = [h for h in hits if _MAINS_SRC.search(h.get("src", ""))]
+    rest = [h for h in hits if not _MAINS_SRC.search(h.get("src", ""))]
+    if len(mains_hits) < 4:
+        extra = KB.search(q + " mains descriptive question", top_k=10)
+        for h in extra:
+            if _MAINS_SRC.search(h.get("src", "")) and h not in mains_hits:
+                mains_hits.append(h)
+    ctx = KB.build_context(mains_hits + rest, max_chars=11000)
+    sysmsg = MAINS_SYS.format(name=BOT_NAME, website=WEBSITE,
+                              lang_rule=LANG_RULE.get(lang, LANG_RULE["auto"]))
+    bump("mains")
+    out = llm.complete(
+        sysmsg,
+        f"QUESTION BANK:\n=====\n{ctx}\n=====\n\nSTUDENT ASKED: {q}",
+        temperature=0.35, max_tokens=DETAIL_TOKENS)
+    return strip_sources(out)
 
 
 # ------------------------------------------------------------ PYQ / MCQ mode
@@ -964,7 +1231,8 @@ RULES:
    as **Practice**.
 5. Never name the source file, book or paper.
 6. No preamble. Start with the first question.
-7. End with one line telling them to use /quiz for an attemptable version."""
+7. End with one line telling them to use /quiz for an attemptable version, and mention
+   that full mock tests, mini quizzes and test series are on {website}."""
 
 
 # ------------------------------------------------------------ strategy mode
@@ -1026,9 +1294,19 @@ HOW TO ANSWER:
 6. MOTIVATE — honestly, not cheaply. Acknowledge that this exam is hard and slow, that
    plateaus are normal, and that consistency beats intensity. If they sound low or
    defeated, address that FIRST, warmly, before any plan.
-7. Close with ONE thing they can do today. Just one.
-8. Under 220 words. No preamble, no "great question". Never name books, files or sources.
-9. Never say you are an AI, Gemini or Google."""
+7. If they ask about the exam itself — pattern, marks, negative marking, eligibility,
+   number of papers, Prelims vs Mains, cut-off, how the Mains descriptive paper is
+   evaluated — answer as an insider: exact structure, exact marks, what the paper
+   really tests, and where students lose marks. If you are not fully certain of a
+   current official detail, say the current pattern should be confirmed on
+   {website} rather than stating a wrong number.
+8. Close with ONE thing they can do today. Just one.
+9. Length: 250-400 words — enough to be genuinely useful, never a wall of text.
+   No preamble, no "great question". Never name books, files or sources.
+10. Point them to {website} for the full syllabus, free notes, mock tests, mini
+   quizzes and test series, and to {glink} for daily doubts — naturally, in one line,
+   at the end.
+11. Never say you are an AI, Gemini or Google. You are their teacher."""
 
 
 QUIZ_SYS = """You are a question setter for Indian agriculture competitive exams
@@ -1120,13 +1398,17 @@ in the same language.
 <b>Just ask normally for</b>
 • PYQs — <code>previous year questions on ATMA</code>
 • Strategy — <code>how to prepare for ASRB NET?</code>
+/website — syllabus, notes, mock tests, mini quiz, test series
 /lang auto|en|hi|hinglish — set answer language
 /contact — reach Tripathi Sir
 /stats — bot usage
 /help — this message
 
 <b>Tip:</b> the more specific your question, the sharper the answer. 👍
+Want a long answer? Just add <b>"in detail"</b> or <b>"descriptive"</b> to your question.
 
+🌐 Website (syllabus, notes, free notes, mock tests, mini quizzes, test series):
+{website}
 👥 Join our group: {glink}"""
 
 
@@ -1156,7 +1438,9 @@ def cmd_syllabus(chat, msg, arg):
                 tg("sendMessage", chat_id=chat, text=txt[i:i + 3800], parse_mode="HTML")
             return
     txt = (f"📘 <b>{syllabus.HEADER}</b>\n\n{syllabus.unit_list()}\n\n"
-           "Send <code>/syllabus 5</code> for the full text of any unit.")
+           "Send <code>/syllabus 5</code> for the full text of any unit.\n\n"
+           f"🌐 Full syllabus, mock tests, mini quizzes, test series and free notes: "
+           f"{WEBSITE}")
     tg("sendMessage", chat_id=chat, text=txt, parse_mode="HTML",
        reply_to_message_id=msg["message_id"])
 
@@ -1380,7 +1664,7 @@ def handle(msg):
                    text=special.GREETING.format(first=special.FIRST))
                 return
             tg("sendMessage", chat_id=chat,
-               text=HELP.format(name=BOT_NAME, glink=GROUP_LINK),
+               text=HELP.format(name=BOT_NAME, glink=GROUP_LINK, website=WEBSITE),
                parse_mode="HTML", disable_web_page_preview=True); return
         if cmd == "sources":
             cmd_sources(chat, msg, uid); return
@@ -1416,6 +1700,10 @@ def handle(msg):
                 traceback.print_exc()
                 send(chat, "😕 Could not build the mock round. Please try again.",
                      reply_to=msg["message_id"])
+            return
+        if cmd in ("website", "site", "web", "notes", "mocktest", "testseries"):
+            tg("sendMessage", chat_id=chat, text=WEBSITE_MSG, parse_mode="HTML",
+               disable_web_page_preview=False, reply_to_message_id=msg["message_id"])
             return
         if cmd in ("contact", "admin", "owner"):
             tg("sendMessage", chat_id=chat, text=CONTACT_MSG, parse_mode="HTML",
@@ -1655,6 +1943,7 @@ def main():
         {"command": "quiz", "description": "Attemptable MCQ practice"},
         {"command": "topics", "description": "PYQ topics you can practise"},
         {"command": "lang", "description": "auto | en | hi | hinglish"},
+        {"command": "website", "description": "Syllabus, notes, mock tests, test series"},
         {"command": "contact", "description": "Reach Tripathi Sir"},
         {"command": "stats", "description": "Bot usage"},
         {"command": "help", "description": "How to use this bot"},
